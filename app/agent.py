@@ -41,6 +41,28 @@ def _is_approval(text: str) -> bool:
     )
 
 
+def _is_date_question(text: str) -> bool:
+    """Detecta se o usuário está perguntando sobre data/dia do horário sugerido."""
+    if not text or len(text) > 80:
+        return False
+    t = text.strip().lower()
+    return any(
+        x in t
+        for x in (
+            "qual dia",
+            "qual data",
+            "que dia",
+            "que data",
+            "qual o dia",
+            "qual a data",
+            "quando",
+            "que dia é",
+            "dia qual",
+            "data qual",
+        )
+    )
+
+
 def _apply_template(template: str, **kwargs) -> str:
     out = template
     for k, v in (kwargs or {}).items():
@@ -64,7 +86,7 @@ def run_agent(phone_id: str, first_name: str, text: str) -> str:
     )
     template_suggestion = (
         (config and config.get("message_template_suggestion"))
-        or "Legal {{firstName}}, podemos agendar uma entrevista às {{horaSug}}. Nesta entrevista online, que é bem rápida e não leva 10 minutos, irei explicar um pouco mais os detalhes da vaga e também darei algumas dicas para lograr êxito no processo seletivo. Pode ser {{horaSug}}?"
+        or "Legal {{firstName}}, podemos agendar uma entrevista no dia {{dataSug}} às {{horaSug}}. Nesta entrevista online, que é bem rápida e não leva 10 minutos, irei explicar um pouco mais os detalhes da vaga e também darei algumas dicas para lograr êxito no processo seletivo. Pode ser?"
     )
     template_confirmation = (
         (config and config.get("message_template_confirmation"))
@@ -77,6 +99,19 @@ def run_agent(phone_id: str, first_name: str, text: str) -> str:
     current_slot_time = conv and conv.get("current_slot_time")
     current_responsible = conv and conv.get("current_responsible")
     candidate_name = (conv and conv.get("first_name")) or first_name or "Candidato(a)"
+
+    # Usuário perguntou sobre data/dia do horário sugerido → responder com a data
+    if flow_status == "waiting_slot_approval" and _is_date_question(text) and current_slot_date and current_slot_time:
+        from datetime import datetime
+        try:
+            dt = datetime.strptime(f"{current_slot_date} {current_slot_time}", "%Y-%m-%d %H:%M")
+            data_hora_str = dt.strftime("%d/%m/%Y às %H:%M")
+        except Exception:
+            data_hora_str = f"{current_slot_date} às {current_slot_time}"
+        reply = f"O horário que sugeri é para o dia {data_hora_str}. Pode confirmar respondendo 'sim' ou 'pode ser'?"
+        add_memory(phone_id, "user", text)
+        add_memory(phone_id, "assistant", reply)
+        return reply
 
     # Fluxo direto: usuário aprovou o horário sugerido
     if flow_status == "waiting_slot_approval" and _is_approval(text) and current_slot_date and current_slot_time:
@@ -114,7 +149,14 @@ def run_agent(phone_id: str, first_name: str, text: str) -> str:
     # Obter próximo slot e sugerir
     slot = get_next_slot()
     if slot:
-        hora_sug = slot.get("time") or slot.get("time", "")
+        hora_sug = slot.get("time") or ""
+        data_sug = slot.get("date") or ""
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(data_sug, "%Y-%m-%d")
+            data_sug = dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
         entrevistador = slot.get("entrevistador") or slot.get("responsible") or (config and config.get("default_entrevistador")) or ""
         upsert_conversation(
             phone_id,
@@ -128,6 +170,7 @@ def run_agent(phone_id: str, first_name: str, text: str) -> str:
             template_suggestion,
             firstName=first_name or "Candidato(a)",
             horaSug=hora_sug,
+            dataSug=data_sug,
         )
         add_memory(phone_id, "user", text)
         add_memory(phone_id, "assistant", reply)

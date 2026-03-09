@@ -48,6 +48,20 @@ def mark_message_processed(message_id: str, phone_id: str) -> None:
             )
 
 
+def try_mark_message_processed(message_id: str, phone_id: str) -> bool:
+    """
+    Tenta marcar mensagem como processada. Retorna True se foi a primeira (inseriu),
+    False se já existia (evita duplicatas por race condition quando 2 webhooks chegam juntos).
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT IGNORE INTO ia_agendamento_processed_messages (message_id, phone_id) VALUES (%s, %s)",
+                (message_id, phone_id),
+            )
+            return cur.rowcount == 1
+
+
 def get_conversation(phone_id: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:

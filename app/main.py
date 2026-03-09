@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from .config import WEBHOOK_SECRET
-from .db import is_message_processed, mark_message_processed
+from .db import is_message_processed, try_mark_message_processed
 from .agent import run_agent
 from .php_client import send_whatsapp_message
 
@@ -101,6 +101,20 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
             return val.get("body") or val.get("text") or val.get("message") or ""
         return str(val)
 
+    # Payload Treinee (formato key + message): sender_pn tem o número real, message.conversation o texto
+    if "key" in body and "message" in body:
+        key = body.get("key", {}) or {}
+        msg = body.get("message", {}) or {}
+        raw_phone = key.get("sender_pn") or key.get("remoteJid") or ""
+        raw_phone = str(raw_phone).split("@")[0] if raw_phone else ""
+        text = msg.get("conversation") or msg.get("extendedTextMessage", {}).get("text") or _to_text(msg)
+        return {
+            "message_id": key.get("id") or ("msg-" + uuid.uuid4().hex),
+            "phone": _normalize_phone(raw_phone),
+            "text": text if isinstance(text, str) else _to_text(text),
+            "first_name": body.get("pushName", ""),
+        }
+
     # Payload simples (teste ou outro provedor)
     if "message_id" in body and "from" in body:
         raw = body.get("text", body.get("body", body.get("message", "")))
@@ -113,7 +127,7 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
         }
     # Payload Treinee/provedor: phone ou from + texto em text/body/message/content
     if "phone" in body or "from" in body or "connectedPhone" in body:
-        mid = body.get("message_id") or body.get("id") or ("msg-" + uuid.uuid4().hex)
+        mid = body.get("messageId") or body.get("message_id") or body.get("id") or ("msg-" + uuid.uuid4().hex)
         # Treinee: fromMe=true → usar connectedPhone; fromMe=false → phone (pode ser 100649052156060@lid)
         if body.get("fromMe") is True and body.get("connectedPhone"):
             raw_phone = body["connectedPhone"]
@@ -191,13 +205,11 @@ async def webhook_whatsapp(
     if not phone:
         return JSONResponse(content={"received": True}, status_code=200)
 
-    # Idempotência
-    if message_id and is_message_processed(message_id):
-        logger.info("webhook/whatsapp: duplicate message_id ignored", extra={"message_id": message_id[:30] if message_id else "(vazio)"})
-        return JSONResponse(content={"received": True}, status_code=200)
-
+    # Idempotência: inserir primeiro evita race quando 2 webhooks (ex.: Treinee) chegam juntos
     if message_id:
-        mark_message_processed(message_id, phone)
+        if not try_mark_message_processed(message_id, phone):
+            logger.info("webhook/whatsapp: duplicate message_id ignored", extra={"message_id": message_id[:30] if message_id else "(vazio)"})
+            return JSONResponse(content={"received": True}, status_code=200)
 
     if not text:
         reply = "Olá! Para agendar sua entrevista, por favor envie uma mensagem (por exemplo: 'Quero agendar entrevista')."
