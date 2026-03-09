@@ -1,3 +1,4 @@
+import json
 import logging
 import httpx
 from typing import Optional, Dict, Any
@@ -70,6 +71,7 @@ def get_entrevistador() -> Optional[str]:
 
 def send_whatsapp_message(phone: str, message: str) -> bool:
     if not BASE_URL or not API_KEY:
+        logger.warning("send_whatsapp_message: BASE_URL or API_KEY not set")
         return False
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -79,8 +81,25 @@ def send_whatsapp_message(phone: str, message: str) -> bool:
                 json={"phone": phone, "message": message},
             )
             r.raise_for_status()
-            data = r.json()
-            return data.get("success", False)
+            raw = r.text
+            if not raw or not raw.strip():
+                logger.warning("send_whatsapp_message: PHP retornou corpo vazio (HTTP %d)", r.status_code)
+                return False
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "send_whatsapp_message: PHP retornou corpo inválido (não-JSON): %s...",
+                    raw[:100] if len(raw) > 100 else raw,
+                )
+                return False
+            ok = data.get("success", False)
+            if not ok:
+                logger.warning(
+                    "send_whatsapp_message: PHP returned success=false - %s",
+                    data.get("message", "(sem mensagem)"),
+                )
+            return ok
     except Exception as e:
         logger.exception("send_whatsapp_message failed: %s", e)
         return False
