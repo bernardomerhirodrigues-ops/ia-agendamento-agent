@@ -13,6 +13,19 @@ logger = logging.getLogger(__name__)
 # Respostas de fallback quando OpenAI falha
 FALLBACK_MSG = "Desculpe, tive um problema técnico. Pode confirmar se deseja agendar uma entrevista? Responda 'sim' para continuarmos."
 
+# Prompt padrão sugerido para o agente de agendamento
+_DEFAULT_SYSTEM_PROMPT = """Você é um assistente cordial que agenda entrevistas de estágio por WhatsApp. Converse de forma natural e acolhedora.
+
+REGRAS:
+1. Use get_next_slot para obter o próximo horário disponível. Sugira sempre UM horário por vez.
+2. Ao sugerir, informe SEMPRE a data e a hora (ex: "dia 15/03 às 08:00" ou "terça-feira, 10 de março às 08h").
+3. Se o candidato perguntar "qual dia?", "de qual dia?" ou "que dia será?", responda com a data do horário que você sugeriu.
+4. Quando o candidato aprovar (sim, pode ser, confirmo, ok, beleza, quero): OBRIGATÓRIO chamar reserve_slot ANTES de enviar qualquer mensagem de confirmação. O agendamento só é real após o retorno bem-sucedido da ferramenta. Nunca diga "sua entrevista está confirmada" sem ter chamado reserve_slot primeiro.
+5. Se o retorno de reserve_slot indicar sucesso, envie a confirmação com data, hora e nome do entrevistador. Se indicar erro, peça para tentar outro horário.
+6. Seja breve: mensagens curtas funcionam melhor no WhatsApp.
+7. Se não houver horários disponíveis, informe com educação e sugira tentar em outro momento.
+8. Cumprimente ao início e agradeça ao final quando apropriado."""
+
 
 def _normalize_phone(phone: str) -> str:
     p = re.sub(r"\D", "", phone)
@@ -40,13 +53,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
         model = (config and config.get("openai_model")) or "gpt-4o-mini"
         temperature = float((config and config.get("temperature")) or 0.7)
         temperature = min(2.0, max(0.0, temperature))
-        base_prompt = (config and config.get("system_prompt")) or (
-            "Você é um assistente cordial que agenda entrevistas por WhatsApp. "
-            "Converse naturalmente. Use get_next_slot para obter o próximo horário disponível e sugira UM por vez, sempre informando a DATA e a HORA (ex: 'dia 15/03 às 08:00'). "
-            "Se o candidato perguntar 'qual dia?' ou 'de qual dia?', responda com a data do horário que você sugeriu. "
-            "Quando o candidato aprovar (sim, pode ser, confirmo, ok, beleza), use reserve_slot com a data (YYYY-MM-DD) e hora (HH:MM) do slot que você sugeriu, e depois envie a confirmação com data, hora e nome do entrevistador. "
-            "Seja breve e objetivo nas mensagens."
-        )
+        base_prompt = (config and config.get("system_prompt")) or _DEFAULT_SYSTEM_PROMPT
         candidate_name = first_name or "Candidato(a)"
         system_prompt = f"{base_prompt}\n\nO nome do candidato nesta conversa é: {candidate_name}."
 
@@ -68,7 +75,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "reserve_slot",
-                    "description": "Reserva o horário para o candidato. Use APENAS quando o candidato aprovar (sim, pode ser, confirmo). Passe a data e hora EXATAS do slot que você sugeriu.",
+                    "description": "OBRIGATÓRIO: Reserva o horário no sistema. Deve ser chamada SEMPRE que o candidato aprovar (sim, pode ser, confirmo). O agendamento só existe após esta chamada. Passe date (YYYY-MM-DD) e time (HH:MM) exatos do slot que você sugeriu. NUNCA confirme a entrevista ao candidato sem ter chamado esta ferramenta antes.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -89,39 +96,41 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
             },
         ]
 
-        response = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto", temperature=temperature)
-        choice = response.choices[0]
-        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                name = tc.function.name
-                args = {}
-                if tc.function.arguments:
-                    import json
-                    try:
-                        args = json.loads(tc.function.arguments)
-                    except Exception:
-                        pass
-                if name == "get_next_slot":
-                    slot = get_next_slot()
-                    result = slot or {"error": "Nenhum horário disponível"}
-                elif name == "reserve_slot":
-                    r = reserve_slot(
-                        args.get("date", ""),
-                        args.get("time", ""),
-                        args.get("candidate_name", first_name or "Candidato(a)"),
-                    )
-                    result = r or {"error": "Falha ao reservar"}
-                elif name == "get_entrevistador":
-                    result = {"nome_entrevistador": get_entrevistador() or ""}
-                else:
-                    result = {}
+        final_content = FALLBACK_MSG
+        max_tool_rounds = 5
+        for _ in range(max_tool_rounds):
+            response = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto", temperature=temperature)
+            choice = response.choices[0]
+            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
                 messages.append(choice.message)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
-            # Segunda chamada para obter resposta final
-            response2 = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto", temperature=temperature)
-            final_content = response2.choices[0].message.content or FALLBACK_MSG
-        else:
-            final_content = choice.message.content or FALLBACK_MSG
+                for tc in choice.message.tool_calls:
+                    name = tc.function.name
+                    args = {}
+                    if tc.function.arguments:
+                        import json
+                        try:
+                            args = json.loads(tc.function.arguments)
+                        except Exception:
+                            pass
+                    if name == "get_next_slot":
+                        slot = get_next_slot()
+                        result = slot or {"error": "Nenhum horário disponível"}
+                    elif name == "reserve_slot":
+                        r = reserve_slot(
+                            args.get("date", ""),
+                            args.get("time", ""),
+                            args.get("candidate_name", first_name or "Candidato(a)"),
+                        )
+                        result = r or {"error": "Falha ao reservar"}
+                        logger.info("reserve_slot called: date=%s time=%s result=%s", args.get("date"), args.get("time"), "ok" if r else "fail")
+                    elif name == "get_entrevistador":
+                        result = {"nome_entrevistador": get_entrevistador() or ""}
+                    else:
+                        result = {}
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
+            else:
+                final_content = choice.message.content or FALLBACK_MSG
+                break
 
         add_memory(phone_id, "user", text)
         add_memory(phone_id, "assistant", final_content)
