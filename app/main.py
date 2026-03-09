@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .config import WEBHOOK_SECRET
 from .db import is_message_processed, try_mark_message_processed
-from .agent import run_agent
+from .agent import run_agent_with_openai
 from .php_client import send_whatsapp_message
 
 logging.basicConfig(
@@ -218,9 +218,9 @@ async def webhook_whatsapp(
         return JSONResponse(content={"received": True}, status_code=200)
 
     try:
-        reply = run_agent(phone, first_name, text)
+        reply = run_agent_with_openai(phone, first_name, text)
     except Exception as e:
-        logger.exception("run_agent failed: %s", e)
+        logger.exception("run_agent_with_openai failed: %s", e)
         reply = "Desculpe, tive um problema técnico. Pode tentar novamente em instantes?"
     logger.info("webhook/whatsapp: enviando resposta via PHP", extra={"phone_masked": phone[:6] + "****" if len(phone) > 6 else "****", "reply_len": len(reply)})
     send_whatsapp_message(phone, reply)

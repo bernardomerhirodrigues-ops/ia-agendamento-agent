@@ -138,6 +138,6 @@ def get_agent_config() -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT openai_api_key, openai_model, system_prompt, message_template_suggestion, message_template_confirmation, default_entrevistador FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
+                "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
             )
             return cur.fetchone()

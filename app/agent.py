@@ -1,12 +1,12 @@
 import logging
 import re
-from typing import Optional, Dict, Any, List
+from typing import Dict, List
 
 from openai import OpenAI
 
 from .config import OPENAI_API_KEY
-from .db import get_agent_config, get_conversation, upsert_conversation, get_memory, add_memory
-from .php_client import get_next_slot, reserve_slot, get_entrevistador, send_whatsapp_message
+from .db import get_agent_config, get_memory, add_memory
+from .php_client import get_next_slot, reserve_slot, get_entrevistador
 
 logger = logging.getLogger(__name__)
 
@@ -21,185 +21,34 @@ def _normalize_phone(phone: str) -> str:
     return p
 
 
-def _is_approval(text: str) -> bool:
-    if not text or len(text) > 100:
-        return False
-    t = text.strip().lower()
-    return any(
-        x in t
-        for x in (
-            "sim",
-            "pode ser",
-            "confirmo",
-            "confirmar",
-            "pode",
-            "ok",
-            "beleza",
-            "quero",
-            "aceito",
-        )
-    )
-
-
-def _is_date_question(text: str) -> bool:
-    """Detecta se o usuário está perguntando sobre data/dia do horário sugerido."""
-    if not text or len(text) > 80:
-        return False
-    t = text.strip().lower()
-    return any(
-        x in t
-        for x in (
-            "qual dia",
-            "qual data",
-            "que dia",
-            "que data",
-            "qual o dia",
-            "qual a data",
-            "quando",
-            "que dia é",
-            "dia qual",
-            "data qual",
-        )
-    )
-
-
-def _apply_template(template: str, **kwargs) -> str:
-    out = template
-    for k, v in (kwargs or {}).items():
-        out = out.replace("{{" + k + "}}", str(v or ""))
-    return out
-
-
-def run_agent(phone_id: str, first_name: str, text: str) -> str:
+def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
     """
-    Processa a mensagem do usuário e retorna o texto de resposta.
-    Usa OpenAI com tools (next_slot, reserve_slot, get_entrevistador) e memória no banco.
+    Agente conversacional via OpenAI com tools (get_next_slot, reserve_slot).
+    Usa prompt e temperatura configuráveis no sistema.
     """
     phone_id = _normalize_phone(phone_id)
     if not phone_id:
         return "Não foi possível identificar seu número. Por favor, tente novamente."
 
     config = get_agent_config()
-    system_prompt = (
-        (config and config.get("system_prompt"))
-        or "Você é um assistente que agenda entrevistas por WhatsApp. Seja breve e cordial. Sugira sempre um único horário por vez (o mais próximo disponível). Quando o lead aprovar (sim, pode ser, confirmo), use a ferramenta reserve_slot e depois envie a confirmação com data, hora e nome do entrevistador."
-    )
-    template_suggestion = (
-        (config and config.get("message_template_suggestion"))
-        or "Legal {{firstName}}, podemos agendar uma entrevista no dia {{dataSug}} às {{horaSug}}. Nesta entrevista online, que é bem rápida e não leva 10 minutos, irei explicar um pouco mais os detalhes da vaga e também darei algumas dicas para lograr êxito no processo seletivo. Pode ser?"
-    )
-    template_confirmation = (
-        (config and config.get("message_template_confirmation"))
-        or "Legal {{firstName}}, sua entrevista foi marcada e minutos antes iremos enviar o link.\nDia e horário: {{dataHora}}\nEntrevistador: {{nomeEntrevistador}}\n\nDesde já desejo boa sorte!"
-    )
-
-    conv = get_conversation(phone_id)
-    flow_status = (conv and conv.get("flow_status")) or "start"
-    current_slot_date = conv and conv.get("current_slot_date")
-    current_slot_time = conv and conv.get("current_slot_time")
-    current_responsible = conv and conv.get("current_responsible")
-    candidate_name = (conv and conv.get("first_name")) or first_name or "Candidato(a)"
-
-    # Usuário perguntou sobre data/dia do horário sugerido → responder com a data
-    if flow_status == "waiting_slot_approval" and _is_date_question(text) and current_slot_date and current_slot_time:
-        from datetime import datetime
-        try:
-            dt = datetime.strptime(f"{current_slot_date} {current_slot_time}", "%Y-%m-%d %H:%M")
-            data_hora_str = dt.strftime("%d/%m/%Y às %H:%M")
-        except Exception:
-            data_hora_str = f"{current_slot_date} às {current_slot_time}"
-        reply = f"O horário que sugeri é para o dia {data_hora_str}. Pode confirmar respondendo 'sim' ou 'pode ser'?"
-        add_memory(phone_id, "user", text)
-        add_memory(phone_id, "assistant", reply)
-        return reply
-
-    # Fluxo direto: usuário aprovou o horário sugerido
-    if flow_status == "waiting_slot_approval" and _is_approval(text) and current_slot_date and current_slot_time:
-        result = reserve_slot(current_slot_date, current_slot_time, candidate_name)
-        if result:
-            schedule_id = result.get("schedule_id")
-            entrevistador = result.get("entrevistador") or current_responsible or ""
-            # Formata data/hora para exibição
-            from datetime import datetime
-            try:
-                dt = datetime.strptime(f"{current_slot_date} {current_slot_time}", "%Y-%m-%d %H:%M")
-                data_hora_str = dt.strftime("%d/%m/%Y às %H:%M")
-            except Exception:
-                data_hora_str = f"{current_slot_date} às {current_slot_time}"
-            reply = _apply_template(
-                template_confirmation,
-                firstName=first_name or "Candidato(a)",
-                dataHora=data_hora_str,
-                nomeEntrevistador=entrevistador,
-            )
-            upsert_conversation(
-                phone_id,
-                first_name=first_name or conv.get("first_name"),
-                flow_status="scheduled",
-                schedule_id=schedule_id,
-            )
-            add_memory(phone_id, "user", text)
-            add_memory(phone_id, "assistant", reply)
-            return reply
-        # Falha na reserva
-        add_memory(phone_id, "user", text)
-        add_memory(phone_id, "assistant", "Não consegui reservar esse horário agora. Deseja que eu sugira outro?")
-        return "Não consegui reservar esse horário agora. Deseja que eu sugira outro?"
-
-    # Obter próximo slot e sugerir
-    slot = get_next_slot()
-    if slot:
-        hora_sug = slot.get("time") or ""
-        data_sug = slot.get("date") or ""
-        try:
-            from datetime import datetime
-            dt = datetime.strptime(data_sug, "%Y-%m-%d")
-            data_sug = dt.strftime("%d/%m/%Y")
-        except Exception:
-            pass
-        entrevistador = slot.get("entrevistador") or slot.get("responsible") or (config and config.get("default_entrevistador")) or ""
-        upsert_conversation(
-            phone_id,
-            first_name=first_name or (conv and conv.get("first_name")),
-            flow_status="waiting_slot_approval",
-            current_slot_date=slot.get("date"),
-            current_slot_time=slot.get("time"),
-            current_responsible=entrevistador,
-        )
-        reply = _apply_template(
-            template_suggestion,
-            firstName=first_name or "Candidato(a)",
-            horaSug=hora_sug,
-            dataSug=data_sug,
-        )
-        add_memory(phone_id, "user", text)
-        add_memory(phone_id, "assistant", reply)
-        return reply
-
-    # Sem slot disponível ou erro
-    add_memory(phone_id, "user", text)
-    fallback = "No momento não encontrei horários disponíveis. Tente novamente em breve ou entre em contato pelo outro canal."
-    add_memory(phone_id, "assistant", fallback)
-    return fallback
-
-
-def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
-    """
-    Alternativa usando OpenAI com tool calling (pode ser usada no futuro para mais flexibilidade).
-    Por agora run_agent() usa fluxo fixo + templates; esta função fica como opção.
-    """
-    if not OPENAI_API_KEY:
-        return run_agent(phone_id, first_name, text)
+    api_key = (config and config.get("openai_api_key")) or OPENAI_API_KEY
+    if not api_key:
+        return "Desculpe, a integração com IA não está configurada. Entre em contato pelo outro canal."
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        config = get_agent_config()
+        client = OpenAI(api_key=api_key)
         model = (config and config.get("openai_model")) or "gpt-4o-mini"
-        system_prompt = (config and config.get("system_prompt")) or (
-            "Você é um assistente que agenda entrevistas por WhatsApp. Seja breve. "
-            "Use a ferramenta get_next_slot para obter o próximo horário e sugira um por vez. "
-            "Quando o usuário aprovar (sim, pode ser, confirmo), use reserve_slot e depois envie confirmação com data, hora e entrevistador."
+        temperature = float((config and config.get("temperature")) or 0.7)
+        temperature = min(2.0, max(0.0, temperature))
+        base_prompt = (config and config.get("system_prompt")) or (
+            "Você é um assistente cordial que agenda entrevistas por WhatsApp. "
+            "Converse naturalmente. Use get_next_slot para obter o próximo horário disponível e sugira UM por vez, sempre informando a DATA e a HORA (ex: 'dia 15/03 às 08:00'). "
+            "Se o candidato perguntar 'qual dia?' ou 'de qual dia?', responda com a data do horário que você sugeriu. "
+            "Quando o candidato aprovar (sim, pode ser, confirmo, ok, beleza), use reserve_slot com a data (YYYY-MM-DD) e hora (HH:MM) do slot que você sugeriu, e depois envie a confirmação com data, hora e nome do entrevistador. "
+            "Seja breve e objetivo nas mensagens."
         )
+        candidate_name = first_name or "Candidato(a)"
+        system_prompt = f"{base_prompt}\n\nO nome do candidato nesta conversa é: {candidate_name}."
 
         memory = get_memory(phone_id, limit=16)
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
@@ -212,14 +61,14 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "get_next_slot",
-                    "description": "Obtém o próximo horário disponível para entrevista (um único slot).",
+                    "description": "Obtém o próximo horário disponível para entrevista. Retorna date (YYYY-MM-DD), time (HH:MM) e entrevistador. Use sempre que for sugerir um horário.",
                 },
             },
             {
                 "type": "function",
                 "function": {
                     "name": "reserve_slot",
-                    "description": "Reserva o horário para o candidato.",
+                    "description": "Reserva o horário para o candidato. Use APENAS quando o candidato aprovar (sim, pode ser, confirmo). Passe a data e hora EXATAS do slot que você sugeriu.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -240,7 +89,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
             },
         ]
 
-        response = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto")
+        response = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto", temperature=temperature)
         choice = response.choices[0]
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
             for tc in choice.message.tool_calls:
@@ -269,7 +118,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 messages.append(choice.message)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
             # Segunda chamada para obter resposta final
-            response2 = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto")
+            response2 = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto", temperature=temperature)
             final_content = response2.choices[0].message.content or FALLBACK_MSG
         else:
             final_content = choice.message.content or FALLBACK_MSG
