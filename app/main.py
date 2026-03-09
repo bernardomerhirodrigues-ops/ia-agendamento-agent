@@ -98,7 +98,7 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
         if isinstance(val, str):
             return val
         if isinstance(val, dict):
-            return val.get("body") or val.get("text") or ""
+            return val.get("body") or val.get("text") or val.get("message") or ""
         return str(val)
 
     # Payload simples (teste ou outro provedor)
@@ -112,12 +112,16 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
             "first_name": body.get("first_name", body.get("profile", {}).get("first_name", "") if isinstance(body.get("profile"), dict) else ""),
         }
     # Payload Treinee/provedor: phone ou from + texto em text/body/message/content
-    if "phone" in body or "from" in body:
+    if "phone" in body or "from" in body or "connectedPhone" in body:
         mid = body.get("message_id") or body.get("id") or ("msg-" + uuid.uuid4().hex)
-        raw_phone = body.get("phone") or body.get("from") or body.get("sender") or ""
+        # Treinee: fromMe=true → usar connectedPhone; fromMe=false → phone (pode ser 100649052156060@lid)
+        if body.get("fromMe") is True and body.get("connectedPhone"):
+            raw_phone = body["connectedPhone"]
+        else:
+            raw_phone = body.get("phone") or body.get("from") or body.get("sender") or ""
         if isinstance(body.get("contact"), dict):
             raw_phone = raw_phone or body["contact"].get("phone") or body["contact"].get("wa_id") or ""
-        phone = _normalize_phone(raw_phone)
+        phone = _normalize_phone(str(raw_phone).split("@")[0] if raw_phone else "")
         # Treinee pode enviar texto em text, body, message, content ou interactive (botão/lista)
         raw_text = body.get("text") or body.get("body") or body.get("message") or body.get("content") or ""
         if isinstance(body.get("message"), dict):
