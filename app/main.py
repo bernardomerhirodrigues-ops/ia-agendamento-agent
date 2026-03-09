@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import uuid
 from typing import Any, Optional
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -80,8 +81,10 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
             "first_name": body.get("first_name", body.get("profile", {}).get("first_name", "") if isinstance(body.get("profile"), dict) else ""),
         }
     if "phone" in body and "text" in body:
+        # Se o provedor não envia message_id, geramos um único por mensagem (evita duplicatas falsas)
+        mid = body.get("message_id") or body.get("id") or ("msg-" + uuid.uuid4().hex)
         return {
-            "message_id": body.get("message_id", "test-" + str(hash(body.get("phone", "")))),
+            "message_id": mid,
             "phone": body["phone"],
             "text": _to_text(body["text"]),
             "first_name": body.get("first_name", ""),
