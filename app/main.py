@@ -169,6 +169,14 @@ async def webhook_whatsapp(
     except Exception:
         body = {}
 
+    # Ignorar mensagens enviadas PELO negócio (fromMe=true): só responder a mensagens enviadas PARA o número do webhook
+    from_me = body.get("fromMe") if isinstance(body, dict) else None
+    if from_me is None and isinstance(body.get("key"), dict):
+        from_me = body["key"].get("fromMe")
+    if from_me is True:
+        logger.info("webhook/whatsapp: ignorando mensagem fromMe=true (enviada pelo negócio)")
+        return JSONResponse(content={"received": True}, status_code=200)
+
     _text_preview = ""
     if isinstance(body, dict):
         for k in ("text", "body", "message", "content"):
@@ -176,13 +184,8 @@ async def webhook_whatsapp(
             if v is not None:
                 _text_preview = str(v)[:80] if not isinstance(v, dict) else str(v.get("body") or v.get("text") or "")[:80]
                 break
-    # Log completo do payload para localizar phone (5511993874637) e mensagem (teste)
-    _body_json = json.dumps(body, ensure_ascii=False, default=str)[:4000]
-    logger.info("webhook/whatsapp: payload completo recebido | body=%s", _body_json)
     logger.info("webhook/whatsapp received", extra={"has_body": bool(body), "body_keys": list(body.keys()) if isinstance(body, dict) else [], "text_source_preview": _text_preview})
 
-    # Verificação de assinatura Meta (hub.verify_token no GET não usado aqui; POST é o evento)
-    # Alguns provedores enviam GET para verificação da URL; ignoramos se for GET
     payload = _extract_whatsapp_payload(body)
     if not payload:
         return JSONResponse(content={"received": True}, status_code=200)
