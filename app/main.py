@@ -135,6 +135,7 @@ async def webhook_whatsapp(
 
     if not text:
         reply = "Olá! Para agendar sua entrevista, por favor envie uma mensagem (por exemplo: 'Quero agendar entrevista')."
+        logger.info("webhook/whatsapp: enviando resposta padrão (texto vazio)", extra={"phone_masked": phone[:6] + "****" if len(phone) > 6 else "****"})
         send_whatsapp_message(phone, reply)
         return JSONResponse(content={"received": True}, status_code=200)
 
@@ -143,5 +144,6 @@ async def webhook_whatsapp(
     except Exception as e:
         logger.exception("run_agent failed: %s", e)
         reply = "Desculpe, tive um problema técnico. Pode tentar novamente em instantes?"
+    logger.info("webhook/whatsapp: enviando resposta via PHP", extra={"phone_masked": phone[:6] + "****" if len(phone) > 6 else "****", "reply_len": len(reply)})
     send_whatsapp_message(phone, reply)
     return JSONResponse(content={"received": True}, status_code=200)
