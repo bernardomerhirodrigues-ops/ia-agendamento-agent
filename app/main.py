@@ -30,7 +30,8 @@ async def webhook_test(
     request: Request,
     x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
 ):
-    if WEBHOOK_SECRET and x_webhook_secret != WEBHOOK_SECRET:
+    secret_required = (WEBHOOK_SECRET or "").strip()
+    if secret_required and (x_webhook_secret or "").strip() != secret_required:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     body = await request.json() if await request.body() else {}
     logger.info("webhook_test received", extra={"body": body})
@@ -60,19 +61,29 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
                     return {"message_id": mid, "phone": from_, "text": text, "first_name": first_name}
         return None
 
+    def _to_text(val):
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return val
+        if isinstance(val, dict):
+            return val.get("body") or val.get("text") or ""
+        return str(val)
+
     # Payload simples (teste ou outro provedor)
     if "message_id" in body and "from" in body:
+        raw = body.get("text", body.get("body", body.get("message", "")))
         return {
             "message_id": body.get("message_id", body.get("id", "")),
             "phone": body.get("from", body.get("phone", "")),
-            "text": body.get("text", body.get("body", body.get("message", ""))),
+            "text": _to_text(raw),
             "first_name": body.get("first_name", body.get("profile", {}).get("first_name", "") if isinstance(body.get("profile"), dict) else ""),
         }
     if "phone" in body and "text" in body:
         return {
             "message_id": body.get("message_id", "test-" + str(hash(body.get("phone", "")))),
             "phone": body["phone"],
-            "text": body["text"],
+            "text": _to_text(body["text"]),
             "first_name": body.get("first_name", ""),
         }
     return None
@@ -83,7 +94,8 @@ async def webhook_whatsapp(
     request: Request,
     x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
 ):
-    if WEBHOOK_SECRET and x_webhook_secret != WEBHOOK_SECRET:
+    secret_required = (WEBHOOK_SECRET or "").strip()
+    if secret_required and (x_webhook_secret or "").strip() != secret_required:
         logger.warning("webhook/whatsapp: invalid or missing secret")
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
@@ -103,7 +115,11 @@ async def webhook_whatsapp(
 
     message_id = payload.get("message_id") or ""
     phone = payload.get("phone") or ""
-    text = (payload.get("text") or "").strip()
+    raw_text = payload.get("text")
+    if isinstance(raw_text, dict):
+        text = (raw_text.get("body") or raw_text.get("text") or "").strip()
+    else:
+        text = (str(raw_text or "")).strip()
     first_name = (payload.get("first_name") or "").strip()
 
     if not phone:
