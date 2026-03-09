@@ -39,6 +39,32 @@ async def webhook_test(
     return {"received": True, "message": "Teste recebido com sucesso."}
 
 
+def _normalize_phone(phone: str) -> str:
+    """
+    Normaliza número para formato E.164 Brasil (5585999999999).
+    Remove prefixos inválidos e garante 55 para números brasileiros.
+    """
+    if not phone:
+        return ""
+    s = "".join(c for c in str(phone) if c.isdigit())
+    # Remove prefixo 1 antes do 55 (ex.: 1558599999999 -> 5585999999999)
+    if len(s) > 11 and s.startswith("155"):
+        s = s[1:]
+    # Remove zeros à esquerda antes do 55 (ex.: 0558599999999 -> 5585999999999)
+    while len(s) > 11 and s.startswith("0"):
+        s = s[1:]
+    # Adiciona 55 se for número brasileiro (10+ dígitos) sem código do país
+    if len(s) >= 10 and not s.startswith("55"):
+        s = "55" + s
+    # Corrige 5510XX (DDD 10 inválido): Treinee pode enviar 55+10+DDD+numero
+    if len(s) >= 6 and s.startswith("5510"):
+        s = "55" + s[4:]
+    # Brasil: mobile 13 dígitos (55+2+9), fixo 12 (55+2+8)
+    if len(s) > 13 and s.startswith("55"):
+        s = s[:13]
+    return s
+
+
 def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
     """
     Extrai message_id, phone (from), text, first_name de um payload genérico.
@@ -59,7 +85,8 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
                         text = msg.get("button", {}).get("text", "")
                     profile = value.get("contacts", [{}])[0].get("profile", {}) if value.get("contacts") else {}
                     first_name = profile.get("first_name", "") or ""
-                    return {"message_id": mid, "phone": from_, "text": text, "first_name": first_name}
+                    phone = _normalize_phone(str(from_) if from_ is not None else "")
+                    return {"message_id": mid, "phone": phone, "text": text, "first_name": first_name}
         return None
 
     def _to_text(val):
@@ -74,18 +101,24 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
     # Payload simples (teste ou outro provedor)
     if "message_id" in body and "from" in body:
         raw = body.get("text", body.get("body", body.get("message", "")))
+        raw_phone = body.get("from", body.get("phone", ""))
         return {
             "message_id": body.get("message_id", body.get("id", "")),
-            "phone": body.get("from", body.get("phone", "")),
+            "phone": _normalize_phone(str(raw_phone) if raw_phone else ""),
             "text": _to_text(raw),
             "first_name": body.get("first_name", body.get("profile", {}).get("first_name", "") if isinstance(body.get("profile"), dict) else ""),
         }
     if "phone" in body and "text" in body:
         # Se o provedor não envia message_id, geramos um único por mensagem (evita duplicatas falsas)
         mid = body.get("message_id") or body.get("id") or ("msg-" + uuid.uuid4().hex)
+        # Tenta extrair phone de vários campos (Treinee pode usar from, phone, contact.phone, etc.)
+        raw_phone = body.get("phone") or body.get("from") or body.get("sender") or ""
+        if isinstance(body.get("contact"), dict):
+            raw_phone = raw_phone or body["contact"].get("phone") or body["contact"].get("wa_id") or ""
+        phone = _normalize_phone(raw_phone)
         return {
             "message_id": mid,
-            "phone": body["phone"],
+            "phone": phone,
             "text": _to_text(body["text"]),
             "first_name": body.get("first_name", ""),
         }
@@ -108,7 +141,7 @@ async def webhook_whatsapp(
     except Exception:
         body = {}
 
-    logger.info("webhook/whatsapp received", extra={"has_body": bool(body)})
+    logger.info("webhook/whatsapp received", extra={"has_body": bool(body), "body_keys": list(body.keys()) if isinstance(body, dict) else []})
 
     # Verificação de assinatura Meta (hub.verify_token no GET não usado aqui; POST é o evento)
     # Alguns provedores enviam GET para verificação da URL; ignoramos se for GET
@@ -126,7 +159,10 @@ async def webhook_whatsapp(
     first_name = (payload.get("first_name") or "").strip()
 
     _mid = (message_id[:25] + "...") if len(message_id) > 25 else (message_id or "(vazio)")
-    logger.info("webhook/whatsapp: payload extraído message_id=%s text_len=%d", _mid, len(text))
+    _plen = len(phone)
+    _pmask = (phone[:6] + "****") if _plen > 6 else "****"
+    raw_from_body = body.get("phone") or body.get("from") or body.get("sender") or ""
+    logger.info("webhook/whatsapp: payload extraído message_id=%s text_len=%d phone_raw=%s phone_normalized=%s", _mid, len(text), str(raw_from_body)[:20], _pmask)
 
     if not phone:
         return JSONResponse(content={"received": True}, status_code=200)
