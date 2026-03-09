@@ -122,12 +122,15 @@ async def webhook_whatsapp(
         text = (str(raw_text or "")).strip()
     first_name = (payload.get("first_name") or "").strip()
 
+    _mid = (message_id[:25] + "...") if len(message_id) > 25 else (message_id or "(vazio)")
+    logger.info("webhook/whatsapp: payload extraído message_id=%s text_len=%d", _mid, len(text))
+
     if not phone:
         return JSONResponse(content={"received": True}, status_code=200)
 
     # Idempotência
     if message_id and is_message_processed(message_id):
-        logger.info("webhook/whatsapp: duplicate message_id ignored", extra={"message_id": message_id})
+        logger.info("webhook/whatsapp: duplicate message_id ignored", extra={"message_id": message_id[:30] if message_id else "(vazio)"})
         return JSONResponse(content={"received": True}, status_code=200)
 
     if message_id:
