@@ -83,6 +83,9 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
                         text = msg.get("text", {}).get("body", "")
                     elif "button" in msg:
                         text = msg.get("button", {}).get("text", "")
+                    elif "interactive" in msg:
+                        inter = msg.get("interactive", {})
+                        text = inter.get("list_reply", {}).get("title") or inter.get("button_reply", {}).get("title") or ""
                     profile = value.get("contacts", [{}])[0].get("profile", {}) if value.get("contacts") else {}
                     first_name = profile.get("first_name", "") or ""
                     phone = _normalize_phone(str(from_) if from_ is not None else "")
@@ -108,18 +111,25 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
             "text": _to_text(raw),
             "first_name": body.get("first_name", body.get("profile", {}).get("first_name", "") if isinstance(body.get("profile"), dict) else ""),
         }
-    if "phone" in body and "text" in body:
-        # Se o provedor não envia message_id, geramos um único por mensagem (evita duplicatas falsas)
+    # Payload Treinee/provedor: phone ou from + texto em text/body/message/content
+    if "phone" in body or "from" in body:
         mid = body.get("message_id") or body.get("id") or ("msg-" + uuid.uuid4().hex)
-        # Tenta extrair phone de vários campos (Treinee pode usar from, phone, contact.phone, etc.)
         raw_phone = body.get("phone") or body.get("from") or body.get("sender") or ""
         if isinstance(body.get("contact"), dict):
             raw_phone = raw_phone or body["contact"].get("phone") or body["contact"].get("wa_id") or ""
         phone = _normalize_phone(raw_phone)
+        # Treinee pode enviar texto em text, body, message, content ou interactive (botão/lista)
+        raw_text = body.get("text") or body.get("body") or body.get("message") or body.get("content") or ""
+        if isinstance(body.get("message"), dict):
+            raw_text = raw_text or body["message"].get("body") or body["message"].get("text") or ""
+        if not raw_text and isinstance(body.get("interactive"), dict):
+            inter = body["interactive"]
+            raw_text = inter.get("list_reply", {}).get("title") or inter.get("button_reply", {}).get("title") or ""
+        text = _to_text(raw_text)
         return {
             "message_id": mid,
             "phone": phone,
-            "text": _to_text(body["text"]),
+            "text": text,
             "first_name": body.get("first_name", ""),
         }
     return None
@@ -141,7 +151,17 @@ async def webhook_whatsapp(
     except Exception:
         body = {}
 
-    logger.info("webhook/whatsapp received", extra={"has_body": bool(body), "body_keys": list(body.keys()) if isinstance(body, dict) else []})
+    _text_preview = ""
+    if isinstance(body, dict):
+        for k in ("text", "body", "message", "content"):
+            v = body.get(k)
+            if v is not None:
+                _text_preview = str(v)[:80] if not isinstance(v, dict) else str(v.get("body") or v.get("text") or "")[:80]
+                break
+    # Log completo do payload para localizar phone (5511993874637) e mensagem (teste)
+    _body_json = json.dumps(body, ensure_ascii=False, default=str)[:4000]
+    logger.info("webhook/whatsapp: payload completo recebido | body=%s", _body_json)
+    logger.info("webhook/whatsapp received", extra={"has_body": bool(body), "body_keys": list(body.keys()) if isinstance(body, dict) else [], "text_source_preview": _text_preview})
 
     # Verificação de assinatura Meta (hub.verify_token no GET não usado aqui; POST é o evento)
     # Alguns provedores enviam GET para verificação da URL; ignoramos se for GET
