@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from .config import WEBHOOK_SECRET
-from .db import is_message_processed, try_mark_message_processed
+from .db import is_message_processed, try_mark_message_processed, get_agent_config
 from .agent import run_agent_with_openai
 from .php_client import send_whatsapp_message
 
@@ -169,13 +169,27 @@ async def webhook_whatsapp(
     except Exception:
         body = {}
 
-    # Ignorar mensagens enviadas PELO negócio (fromMe=true): só responder a mensagens enviadas PARA o número do webhook
+    # Ignorar mensagens enviadas PELO negócio (fromMe=true)
     from_me = body.get("fromMe") if isinstance(body, dict) else None
     if from_me is None and isinstance(body.get("key"), dict):
         from_me = body["key"].get("fromMe")
     if from_me is True:
         logger.info("webhook/whatsapp: ignorando mensagem fromMe=true (enviada pelo negócio)")
         return JSONResponse(content={"received": True}, status_code=200)
+
+    # Só processar quando a mensagem foi enviada PARA o número configurado (evita responder em número pessoal)
+    webhook_number = ""
+    try:
+        config = get_agent_config()
+        webhook_number = (config and config.get("whatsapp_webhook_number")) or ""
+        webhook_number = _normalize_phone(str(webhook_number).strip()) if webhook_number else ""
+    except Exception:
+        pass
+    if webhook_number:
+        connected = _normalize_phone(str(body.get("connectedPhone", "")).split("@")[0])
+        if connected and connected != webhook_number:
+            logger.info("webhook/whatsapp: ignorando mensagem enviada para outro número (connected=%s, esperado=%s)", connected[:8] + "****", webhook_number[:8] + "****")
+            return JSONResponse(content={"received": True}, status_code=200)
 
     _text_preview = ""
     if isinstance(body, dict):
