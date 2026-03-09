@@ -80,8 +80,15 @@ def send_whatsapp_message(phone: str, message: str) -> bool:
                 headers=_headers(),
                 json={"phone": phone, "message": message},
             )
-            r.raise_for_status()
             raw = r.text
+            if r.status_code >= 400:
+                try:
+                    data = json.loads(raw) if raw else {}
+                    err_msg = data.get("message", raw[:200] if raw else f"HTTP {r.status_code}")
+                except json.JSONDecodeError:
+                    err_msg = raw[:200] if raw else f"HTTP {r.status_code}"
+                logger.warning("send_whatsapp_message: PHP retornou HTTP %d - %s", r.status_code, err_msg)
+                return False
             if not raw or not raw.strip():
                 logger.warning("send_whatsapp_message: PHP retornou corpo vazio (HTTP %d)", r.status_code)
                 return False
@@ -100,6 +107,9 @@ def send_whatsapp_message(phone: str, message: str) -> bool:
                     data.get("message", "(sem mensagem)"),
                 )
             return ok
+    except httpx.HTTPStatusError as e:
+        logger.warning("send_whatsapp_message: HTTP error %d - %s", e.response.status_code, e.response.text[:200] if e.response.text else "")
+        return False
     except Exception as e:
         logger.exception("send_whatsapp_message failed: %s", e)
         return False
