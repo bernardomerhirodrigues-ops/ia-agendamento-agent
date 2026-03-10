@@ -77,6 +77,8 @@ IMPORTANTE:
 2. Propor um horário
    - Quando for propor um horário, SEMPRE:
      - Chame get_next_slot para obter o próximo horário disponível.
+     - Se o candidato pediu OUTRO DIA (amanhã, quarta, sexta, próxima semana): calcule a data em YYYY-MM-DD e chame get_next_slot com min_date igual a essa data.
+     - Se o candidato pediu horário à TARDE (tarde, de tarde, parte da tarde, após o almoço): chame get_next_slot com min_time = "12:00". Se também pediu outro dia, use min_date e min_time juntos.
      - Sugira **apenas UM horário por vez**.
    - Ao sugerir, informe SEMPRE data e hora para o candidato:
      - "Tenho um horário no dia 15/03 às 09:00, pode ser?"
@@ -106,11 +108,14 @@ IMPORTANTE:
    - É OBRIGATÓRIO chamar reserve_slot **ANTES** de enviar qualquer mensagem de confirmação.
    - O agendamento só é real após o retorno bem sucedido da ferramenta.
 
-4. Quando o candidato não pode no horário sugerido
-   - Se o candidato disser que não pode naquele horário:
-     - Pergunte se ele prefere manhã, tarde ou outro dia específico.
-     - Depois chame get_next_slot novamente e veja se o próximo horário encaixa.
-     - Explique de forma simples se só tiver horários em determinados períodos.
+4. Quando o candidato não pode no horário sugerido ou pede outro dia/tarde
+   - Se o candidato disser que não pode naquele horário, ou pedir "à tarde", "amanhã", "quarta", "outro dia":
+     - NÃO chame get_next_slot sem parâmetros. Use SEMPRE min_date e/ou min_time conforme o que ele pediu:
+       - "Amanhã" ou "amanhã à tarde" → min_date = data de amanhã (YYYY-MM-DD). Se "à tarde", também min_time = "12:00".
+       - "Quarta", "quarta à tarde" → min_date = data da próxima quarta (YYYY-MM-DD). Se "à tarde", também min_time = "12:00".
+       - "Tem horário à tarde?", "prefiro tarde" → min_time = "12:00" (e min_date pode ser hoje ou amanhã conforme contexto).
+     - Chame get_next_slot com esses argumentos e sugira o horário retornado.
+     - Se não houver horário disponível, informe com educação e sugira outro período ou dia.
 
 5. Sem horários disponíveis
    - Se get_next_slot indicar que não há horários disponíveis:
@@ -204,14 +209,15 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "get_next_slot",
-                    "description": "Obtém o próximo horário disponível para entrevista. Retorna date (YYYY-MM-DD), time (HH:MM) e entrevistador. Use sempre que for sugerir um horário. Pode receber min_date (YYYY-MM-DD) para começar a buscar a partir de uma data mínima e preferred_responsible ('default', 'substitute' ou 'any') para priorizar entrevistador padrão ou substituto.",
+                    "description": "Obtém o próximo horário disponível para entrevista. OBRIGATÓRIO: quando o candidato pedir outro dia (amanhã, quarta, próxima semana) calcule a data em YYYY-MM-DD e use min_date. Quando pedir horário à TARDE use min_time='12:00'. Retorna date, time e entrevistador.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "min_date": {"type": "string", "description": "Data mínima (YYYY-MM-DD) a partir da qual o horário deve ser buscado. Use quando o candidato pedir outro dia ou uma data específica."},
+                            "min_date": {"type": "string", "description": "Data mínima YYYY-MM-DD. SEMPRE use quando o candidato disser amanhã, quarta, sexta, próxima semana ou outra data (calcule a data correta)."},
+                            "min_time": {"type": "string", "description": "Hora mínima HH:MM. Use '12:00' quando o candidato pedir horário à TARDE, de tarde, parte da tarde ou após o almoço."},
                             "preferred_responsible": {
                                 "type": "string",
-                                "description": "Preferência de entrevistador: 'default' (padrão), 'substitute' (substituto) ou 'any'. Use 'substitute' quando o candidato pedir outro entrevistador.",
+                                "description": "Preferência de entrevistador: 'default', 'substitute' ou 'any'.",
                                 "enum": ["default", "substitute", "any"],
                             },
                         },
@@ -272,6 +278,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                         slot = get_next_slot(
                             args.get("min_date") or None,
                             args.get("preferred_responsible") or None,
+                            args.get("min_time") or None,
                         )
                         result = slot or {"error": "Nenhum horário disponível"}
                     elif name == "reserve_slot":
