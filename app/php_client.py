@@ -82,6 +82,7 @@ def get_next_slot(
     min_date: Optional[str] = None,
     preferred_responsible: Optional[str] = None,
     min_time: Optional[str] = None,
+    last_available_for_date: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     if not BASE_URL or not API_KEY:
         logger.warning("BASE_URL or API_KEY not set")
@@ -93,6 +94,8 @@ def get_next_slot(
         params["preferred_responsible"] = preferred_responsible
     if min_time:
         params["min_time"] = min_time
+    if last_available_for_date:
+        params["last_available_for_date"] = last_available_for_date
     try:
         with httpx.Client(timeout=15.0) as client:
             r = client.get(f"{BASE_URL}/api/agent/next-slot", headers=_headers(), params=params)
