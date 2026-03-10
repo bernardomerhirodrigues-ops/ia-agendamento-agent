@@ -84,7 +84,7 @@ IMPORTANTE:
    - Quando for propor um horário, SEMPRE:
      - Chame get_next_slot para obter o próximo horário disponível.
      - Se o candidato pediu OUTRO DIA (amanhã, quarta, sexta, próxima semana): calcule a data em YYYY-MM-DD e chame get_next_slot com min_date igual a essa data.
-     - Se o candidato pediu horário à TARDE (tarde, de tarde, parte da tarde, após o almoço): chame get_next_slot com min_time = "12:00". Se também pediu outro dia, use min_date e min_time juntos.
+     - Se o candidato pediu horário à TARDE (tarde, de tarde, parte da tarde, após o almoço): chame get_next_slot com min_time = "13:00". Se também pediu outro dia, use min_date e min_time juntos.
      - Sugira **apenas UM horário por vez**.
    - Ao sugerir, informe SEMPRE data e hora para o candidato:
      - "Tenho um horário no dia 15/03 às 09:00, pode ser?"
@@ -116,21 +116,24 @@ IMPORTANTE:
 
 4. Quando o candidato não pode no horário sugerido ou pede outro dia/tarde
    - NUNCA chame get_next_slot sem parâmetros quando o candidato pedir dia ou período. Use SEMPRE os valores do bloco [REFERÊNCIA DE DATA/HORA]:
-     - "Amanhã à tarde" ou "tarde de amanhã" → UMA chamada com min_date = (data de amanhã do bloco) E min_time = "12:00". Os dois juntos.
+     - "Amanhã à tarde" ou "tarde de amanhã" → UMA chamada com min_date = (data de amanhã do bloco) E min_time = "13:00". Os dois juntos.
      - "Amanhã" (só de manhã) → min_date = data de amanhã.
-     - "À tarde", "tarde", "parte da tarde" (sem dizer o dia) → min_time = "12:00".
-     - "Quarta à tarde" → min_date = data da próxima quarta em YYYY-MM-DD e min_time = "12:00".
+     - "À tarde", "tarde", "parte da tarde" (sem dizer o dia) → min_time = "13:00".
+     - "Quarta à tarde" → min_date = data da próxima quarta em YYYY-MM-DD e min_time = "13:00".
    - Se get_next_slot retornar que não há horário (ex.: para amanhã à tarde), chame de novo com preferred_responsible = "substitute" para ver se outro entrevistador tem horário à tarde; só então diga que não encontrou.
    - Sugira o horário retornado. Se realmente não houver, informe com educação e sugira outro dia ou período.
 
-5. Sem horários disponíveis
+5. Quando o candidato perguntar "qual o último horário?" ou "até que horas?"
+   - NUNCA invente um horário (ex.: "o último é às 09:00"). Chame get_next_slot com min_date do dia em questão e min_time = "17:00" para obter um dos últimos horários disponíveis; responda com o horário retornado pela ferramenta (ex.: "O último horário que consigo agendar para você amanhã é às 17:40" ou o que a ferramenta retornar).
+
+6. Sem horários disponíveis
    - Se get_next_slot indicar que não há horários disponíveis:
      - Avise com educação e **não invente** horário.
      - Exemplos:
        - "No momento não tenho mais horários disponíveis para entrevista."
        - "Podemos tentar novamente mais tarde ou em outro dia. Me avisa o melhor período pra você (manhã/tarde)."
 
-6. Encerrando o atendimento
+7. Encerrando o atendimento
    - Depois de confirmar a entrevista ou se não houver horários:
      - Agradeça o contato.
      - Reforce que qualquer dúvida é só responder a mensagem.
@@ -199,8 +202,8 @@ def _contexto_data_hora_sp() -> str:
         f"Data e hora atuais em São Paulo, Brasil: {hoje_iso} ({dia_semana}), {hora}. "
         f"Data de AMANHÃ para min_date: {amanha_iso}. "
         f"Regras para get_next_slot: (1) Candidato disse 'amanhã' → min_date={amanha_iso}. "
-        f"(2) Candidato disse 'à tarde' ou 'tarde' → min_time='12:00'. "
-        f"(3) 'Amanhã à tarde' ou 'tarde de amanhã' → use na MESMA chamada min_date={amanha_iso} E min_time='12:00'."
+        f"(2) Candidato disse 'à tarde' ou 'tarde' → min_time='13:00'. "
+        f"(3) 'Amanhã à tarde' ou 'tarde de amanhã' → use na MESMA chamada min_date={amanha_iso} E min_time='13:00'."
     )
 
 
@@ -243,12 +246,12 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "get_next_slot",
-                    "description": "Obtém o próximo horário disponível. Para 'amanhã à tarde' ou 'tarde de amanhã': passe min_date com a data de AMANHÃ do bloco [REFERÊNCIA] e min_time='12:00' na MESMA chamada. Para só 'amanhã' use min_date. Para só 'tarde' use min_time='12:00'. Retorna date, time e entrevistador.",
+                    "description": "Obtém o próximo horário disponível. Para 'amanhã à tarde' ou 'tarde de amanhã': passe min_date com a data de AMANHÃ do bloco [REFERÊNCIA] e min_time='13:00' na MESMA chamada. Para só 'tarde' use min_time='13:00'. Para 'último horário do dia' use min_time='17:00'. Retorna date, time e entrevistador.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "min_date": {"type": "string", "description": "Data mínima YYYY-MM-DD. Use a data de amanhã do bloco [REFERÊNCIA] quando o candidato disser 'amanhã'. Para 'amanhã à tarde' use esta data E min_time='12:00'."},
-                            "min_time": {"type": "string", "description": "Hora mínima HH:MM. Use '12:00' para 'à tarde', 'tarde de amanhã', 'amanhã à tarde'. Para 'tarde de amanhã' use junto com min_date=amanhã."},
+                            "min_date": {"type": "string", "description": "Data mínima YYYY-MM-DD. Use a data de amanhã do bloco [REFERÊNCIA] quando o candidato disser 'amanhã'. Para 'amanhã à tarde' use esta data E min_time='13:00'."},
+                            "min_time": {"type": "string", "description": "Hora mínima HH:MM. Use '13:00' para 'à tarde'. Use '17:00' quando o candidato perguntar 'qual o último horário?' ou 'até que horas?' para obter um dos últimos horários do dia."},
                             "preferred_responsible": {
                                 "type": "string",
                                 "description": "Preferência de entrevistador: 'default', 'substitute' ou 'any'.",
