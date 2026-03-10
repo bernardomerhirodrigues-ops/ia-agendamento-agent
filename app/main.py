@@ -22,6 +22,13 @@ from .db import (
     get_phones_with_buffer_older_than_seconds,
 )
 from .agent import run_agent_with_openai
+from .config import BASE_URL
+from .media_processor import (
+    download_file,
+    transcribe_audio,
+    describe_image,
+    extract_document_text,
+)
 from .php_client import send_whatsapp_message
 
 # Tarefas agendadas de flush do buffer por phone (canceladas quando chega nova mensagem)
@@ -143,7 +150,9 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
                 for msg in value.get("messages", []):
                     mid = msg.get("id")
                     from_ = msg.get("from")
+                    msg_type = msg.get("type")
                     text = ""
+                    # Texto comum, botões e interativos
                     if "text" in msg:
                         text = msg.get("text", {}).get("body", "")
                     elif "button" in msg:
@@ -151,10 +160,47 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
                     elif "interactive" in msg:
                         inter = msg.get("interactive", {})
                         text = inter.get("list_reply", {}).get("title") or inter.get("button_reply", {}).get("title") or ""
+                    # Mídia: mapeia para marcadores e extrai URL/ID para o agente ler o conteúdo
+                    media_url = None
+                    media_id = None
+                    media_mime = None
+                    media_filename = None
+                    if msg_type == "audio":
+                        text = "[AUDIO]"
+                        obj = msg.get("audio") or {}
+                        media_id = obj.get("id")
+                        media_url = obj.get("url") or obj.get("directLink") or obj.get("link")
+                    elif msg_type == "image":
+                        text = "[IMAGE]"
+                        obj = msg.get("image") or {}
+                        media_id = obj.get("id")
+                        media_url = obj.get("url") or obj.get("directLink") or obj.get("link")
+                    elif msg_type == "document":
+                        doc = msg.get("document", {}) or {}
+                        mime = (doc.get("mime_type") or "").lower()
+                        media_id = doc.get("id")
+                        media_url = doc.get("url") or doc.get("directLink") or doc.get("link")
+                        media_mime = doc.get("mime_type")
+                        media_filename = doc.get("filename")
+                        if "pdf" in mime:
+                            text = "[PDF]"
+                        elif "excel" in mime or "spreadsheet" in mime or mime in ("application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
+                            text = "[EXCEL]"
+                        elif "word" in mime or mime in ("application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+                            text = "[WORD]"
+                        else:
+                            text = "[DOCUMENT]"
                     profile = value.get("contacts", [{}])[0].get("profile", {}) if value.get("contacts") else {}
                     first_name = profile.get("first_name", "") or ""
                     phone = _normalize_phone(str(from_) if from_ is not None else "")
-                    return {"message_id": mid, "phone": phone, "text": text, "first_name": first_name}
+                    out = {"message_id": mid, "phone": phone, "text": text, "first_name": first_name}
+                    if media_url or media_id:
+                        out["media_url"], out["media_id"] = media_url, media_id
+                        if media_mime:
+                            out["media_mime"] = media_mime
+                        if media_filename:
+                            out["media_filename"] = media_filename
+                    return out
         return None
 
     def _to_text(val):
@@ -172,13 +218,51 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
         msg = body.get("message", {}) or {}
         raw_phone = key.get("sender_pn") or key.get("remoteJid") or ""
         raw_phone = str(raw_phone).split("@")[0] if raw_phone else ""
-        text = msg.get("conversation") or msg.get("extendedTextMessage", {}).get("text") or _to_text(msg)
-        return {
+        # Texto comum
+        text = msg.get("conversation") or msg.get("extendedTextMessage", {}).get("text") or ""
+        # Mídia (áudio, imagem, documento) – converte para marcadores e extrai URL/ID
+        media_url, media_id, media_mime, media_filename = None, None, None, None
+        if not text and isinstance(msg, dict):
+            if "audioMessage" in msg:
+                text = "[AUDIO]"
+                obj = msg.get("audioMessage") or {}
+                media_id = obj.get("id")
+                media_url = obj.get("url") or obj.get("directLink") or obj.get("link") or obj.get("directPath")
+            elif "imageMessage" in msg:
+                text = "[IMAGE]"
+                obj = msg.get("imageMessage") or {}
+                media_id = obj.get("id")
+                media_url = obj.get("url") or obj.get("directLink") or obj.get("link") or obj.get("directPath")
+            elif "documentMessage" in msg:
+                doc = msg.get("documentMessage") or {}
+                mime = (doc.get("mimetype") or "").lower()
+                media_id = doc.get("id")
+                media_url = doc.get("url") or doc.get("directLink") or doc.get("link") or doc.get("directPath")
+                media_mime = doc.get("mimetype")
+                media_filename = doc.get("fileName") or doc.get("filename")
+                if "pdf" in mime:
+                    text = "[PDF]"
+                elif "excel" in mime or "spreadsheet" in mime or mime in ("application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
+                    text = "[EXCEL]"
+                elif "word" in mime or mime in ("application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+                    text = "[WORD]"
+                else:
+                    text = "[DOCUMENT]"
+        if not text:
+            text = _to_text(msg)
+        out = {
             "message_id": key.get("id") or ("msg-" + uuid.uuid4().hex),
             "phone": _normalize_phone(raw_phone),
             "text": text if isinstance(text, str) else _to_text(text),
             "first_name": body.get("pushName", ""),
         }
+        if media_url or media_id:
+            out["media_url"], out["media_id"] = media_url, media_id
+            if media_mime:
+                out["media_mime"] = media_mime
+            if media_filename:
+                out["media_filename"] = media_filename
+        return out
 
     # Payload simples (teste ou outro provedor)
     if "message_id" in body and "from" in body:
@@ -203,18 +287,53 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
         phone = _normalize_phone(str(raw_phone).split("@")[0] if raw_phone else "")
         # Treinee pode enviar texto em text, body, message, content ou interactive (botão/lista)
         raw_text = body.get("text") or body.get("body") or body.get("message") or body.get("content") or ""
+        media_url, media_id, media_mime, media_filename = None, None, None, None
         if isinstance(body.get("message"), dict):
-            raw_text = raw_text or body["message"].get("body") or body["message"].get("text") or ""
+            msg_obj = body["message"]
+            raw_text = raw_text or msg_obj.get("body") or msg_obj.get("text") or ""
+            if not raw_text:
+                if "audioMessage" in msg_obj or body.get("type") == "audio":
+                    raw_text = "[AUDIO]"
+                    obj = msg_obj.get("audioMessage") or {}
+                    media_id = obj.get("id") or body.get("mediaId")
+                    media_url = obj.get("url") or obj.get("directLink") or obj.get("link") or body.get("audioUrl") or body.get("mediaUrl")
+                elif "imageMessage" in msg_obj or body.get("type") == "image":
+                    raw_text = "[IMAGE]"
+                    obj = msg_obj.get("imageMessage") or {}
+                    media_id = obj.get("id") or body.get("mediaId")
+                    media_url = obj.get("url") or obj.get("directLink") or obj.get("link") or body.get("imageUrl") or body.get("mediaUrl")
+                elif "documentMessage" in msg_obj or body.get("type") == "document":
+                    doc = msg_obj.get("documentMessage") or {}
+                    mime = (doc.get("mimetype") or body.get("mimeType") or "").lower()
+                    media_id = doc.get("id") or body.get("mediaId")
+                    media_url = doc.get("url") or doc.get("directLink") or doc.get("link") or body.get("documentUrl") or body.get("mediaUrl")
+                    media_mime = doc.get("mimetype") or body.get("mimeType")
+                    media_filename = doc.get("fileName") or doc.get("filename") or body.get("filename")
+                    if "pdf" in mime:
+                        raw_text = "[PDF]"
+                    elif "excel" in mime or "spreadsheet" in mime or mime in ("application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
+                        raw_text = "[EXCEL]"
+                    elif "word" in mime or mime in ("application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+                        raw_text = "[WORD]"
+                    else:
+                        raw_text = "[DOCUMENT]"
         if not raw_text and isinstance(body.get("interactive"), dict):
             inter = body["interactive"]
             raw_text = inter.get("list_reply", {}).get("title") or inter.get("button_reply", {}).get("title") or ""
         text = _to_text(raw_text)
-        return {
+        out = {
             "message_id": mid,
             "phone": phone,
             "text": text,
             "first_name": body.get("first_name", ""),
         }
+        if media_url or media_id:
+            out["media_url"], out["media_id"] = media_url, media_id
+            if media_mime:
+                out["media_mime"] = media_mime
+            if media_filename:
+                out["media_filename"] = media_filename
+        return out
     return None
 
 
@@ -300,6 +419,47 @@ async def webhook_whatsapp(
     logger.info("webhook/whatsapp: payload extraído message_id=%s text_len=%d phone_raw=%s phone_normalized=%s", _mid, len(text), str(raw_from_body)[:20], _pmask)
 
     if not phone:
+        return JSONResponse(content={"received": True}, status_code=200)
+
+    # Mídia: tentar baixar e "ler" (transcrição, descrição ou extração de texto) para passar ao agente
+    media_url = payload.get("media_url")
+    media_id = payload.get("media_id")
+    if not media_url and media_id and BASE_URL:
+        media_url = BASE_URL.rstrip("/") + "/api/agent/media?id=" + str(media_id).strip()
+    if text in ("[AUDIO]", "[IMAGE]", "[PDF]", "[EXCEL]", "[WORD]", "[DOCUMENT]") and media_url:
+        data, content_type = download_file(media_url)
+        if data:
+            try:
+                agent_config = get_agent_config()
+                api_key = (agent_config and agent_config.get("openai_api_key")) or os.getenv("OPENAI_API_KEY", "")
+                if text == "[AUDIO]":
+                    extracted = transcribe_audio(data, api_key, content_type)
+                    text = f"O usuário enviou um áudio. Transcrição: {extracted}"
+                elif text == "[IMAGE]":
+                    extracted = describe_image(data, api_key, content_type)
+                    text = f"O usuário enviou uma imagem. Descrição: {extracted}"
+                else:
+                    mime = payload.get("media_mime") or content_type or ""
+                    filename = payload.get("media_filename") or ""
+                    extracted = extract_document_text(data, mime, filename)
+                    max_len = 12000
+                    if len(extracted) > max_len:
+                        extracted = extracted[:max_len] + "\n[... documento truncado ...]"
+                    text = f"O usuário enviou um documento. Conteúdo extraído:\n{extracted}"
+                logger.info("webhook/whatsapp: mídia processada tipo=%s len=%d", text[:20], len(extracted))
+            except Exception as e:
+                logger.exception("webhook/whatsapp: falha ao processar mídia: %s", e)
+    # Se ainda for marcador de mídia, não conseguimos obter/processar o arquivo → pedir texto
+    media_reply: Optional[str] = None
+    if text == "[AUDIO]":
+        media_reply = "Não consegui acessar o áudio. Por favor, escreva sua dúvida ou pedido em uma mensagem de texto."
+    elif text == "[IMAGE]":
+        media_reply = "Não consegui acessar a imagem. Por favor, descreva em texto o que você precisa."
+    elif text in ("[PDF]", "[EXCEL]", "[WORD]", "[DOCUMENT]"):
+        media_reply = "Não consegui acessar o arquivo. Por favor, copie ou resuma as informações em uma mensagem de texto."
+    if media_reply:
+        logger.info("webhook/whatsapp: mídia sem acesso/processamento (%s), pedindo texto", text)
+        send_whatsapp_message(phone, media_reply)
         return JSONResponse(content={"received": True}, status_code=200)
 
     buffer_seconds = 0
