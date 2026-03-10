@@ -20,7 +20,7 @@ REGRAS:
 1. Use get_next_slot para obter o próximo horário disponível. Sugira sempre UM horário por vez.
 2. Ao sugerir, informe SEMPRE a data e a hora (ex: "dia 15/03 às 08:00" ou "terça-feira, 10 de março às 08h").
 3. Se o candidato perguntar "qual dia?", "de qual dia?" ou "que dia será?", responda com a data do horário que você sugeriu.
-4. Quando o candidato aprovar (sim, pode ser, confirmo, ok, beleza, quero): OBRIGATÓRIO chamar reserve_slot ANTES de enviar qualquer mensagem de confirmação. O agendamento só é real após o retorno bem-sucedido da ferramenta. Nunca diga "sua entrevista está confirmada" sem ter chamado reserve_slot primeiro.
+4. Quando o candidato aprovar (sim, pode ser, confirmo, ok, beleza, quero): OBRIGATÓRIO chamar reserve_slot ANTES de enviar qualquer mensagem de confirmação. Passe em responsible o nome do entrevistador retornado por get_next_slot (o slot pode ser do entrevistador padrão ou substituto). O agendamento só é real após o retorno bem-sucedido da ferramenta. Nunca diga "sua entrevista está confirmada" sem ter chamado reserve_slot primeiro.
 5. Se o retorno de reserve_slot indicar sucesso, envie a confirmação com data, hora e nome do entrevistador. Se indicar erro, peça para tentar outro horário.
 6. Seja breve: mensagens curtas funcionam melhor no WhatsApp.
 7. Se não houver horários disponíveis, informe com educação e sugira tentar em outro momento.
@@ -79,13 +79,14 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "reserve_slot",
-                    "description": "OBRIGATÓRIO: Reserva o horário no sistema. Deve ser chamada SEMPRE que o candidato aprovar (sim, pode ser, confirmo). O agendamento só existe após esta chamada. Passe date (YYYY-MM-DD) e time (HH:MM) exatos do slot que você sugeriu. NUNCA confirme a entrevista ao candidato sem ter chamado esta ferramenta antes.",
+                    "description": "OBRIGATÓRIO: Reserva o horário no sistema. Deve ser chamada SEMPRE que o candidato aprovar (sim, pode ser, confirmo). Passe date (YYYY-MM-DD) e time (HH:MM) exatos do slot que você sugeriu e o responsible (nome do entrevistador retornado por get_next_slot). NUNCA confirme a entrevista ao candidato sem ter chamado esta ferramenta antes.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "date": {"type": "string", "description": "Data YYYY-MM-DD"},
                             "time": {"type": "string", "description": "Hora HH:MM"},
                             "candidate_name": {"type": "string", "description": "Nome do candidato"},
+                            "responsible": {"type": "string", "description": "Nome do entrevistador do slot (valor 'entrevistador' retornado por get_next_slot). Use para reservar no nome correto."},
                         },
                         "required": ["date", "time", "candidate_name"],
                     },
@@ -131,6 +132,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                             args.get("date", ""),
                             args.get("time", ""),
                             args.get("candidate_name", first_name or "Candidato(a)"),
+                            args.get("responsible") or None,
                         )
                         result = r or {"error": "Falha ao reservar"}
                         logger.info("reserve_slot called: date=%s time=%s result=%s", args.get("date"), args.get("time"), "ok" if r else "fail")

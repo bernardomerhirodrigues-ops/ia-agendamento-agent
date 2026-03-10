@@ -95,15 +95,18 @@ def get_next_slot() -> Optional[Dict[str, Any]]:
         return None
 
 
-def reserve_slot(date: str, time: str, candidate_name: str) -> Optional[Dict[str, Any]]:
+def reserve_slot(date: str, time: str, candidate_name: str, responsible: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not BASE_URL or not API_KEY:
         return None
+    payload: Dict[str, Any] = {"date": date, "time": time, "candidate_name": candidate_name}
+    if responsible:
+        payload["responsible"] = responsible
     try:
         with httpx.Client(timeout=15.0) as client:
             r = client.post(
                 f"{BASE_URL}/api/agent/reserve",
                 headers=_headers(),
-                json={"date": date, "time": time, "candidate_name": candidate_name},
+                json=payload,
             )
             r.raise_for_status()
             data = r.json()
