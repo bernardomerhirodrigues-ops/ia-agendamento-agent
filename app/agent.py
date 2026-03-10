@@ -1,8 +1,14 @@
 import logging
 import re
+from datetime import datetime, timedelta
 from typing import Dict, List
 
 from openai import OpenAI
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # type: ignore
 
 from .config import OPENAI_API_KEY
 from .db import get_agent_config, get_memory, add_memory, upsert_conversation
@@ -175,6 +181,27 @@ def _normalize_phone(phone: str) -> str:
     return p
 
 
+def _now_sao_paulo() -> datetime:
+    """Data/hora atual em São Paulo, Brasil (fuso usado pelo sistema)."""
+    return datetime.now(ZoneInfo("America/Sao_Paulo"))
+
+
+def _contexto_data_hora_sp() -> str:
+    """Texto com data/hora em SP para o modelo calcular 'amanhã', 'quarta', etc."""
+    now = _now_sao_paulo()
+    hoje_iso = now.strftime("%Y-%m-%d")
+    amanha = now + timedelta(days=1)
+    amanha_iso = amanha.strftime("%Y-%m-%d")
+    hora = now.strftime("%H:%M")
+    dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+    dia_semana = dias[now.weekday()]
+    return (
+        f"Data e hora atuais em São Paulo, Brasil: {hoje_iso} ({dia_semana}), {hora}. "
+        f"Para get_next_slot: quando o candidato disser 'amanhã', use min_date={amanha_iso}. "
+        f"Quando disser 'à tarde' ou 'tarde', use min_time='12:00'."
+    )
+
+
 def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
     """
     Agente conversacional via OpenAI com tools (get_next_slot, reserve_slot).
@@ -196,7 +223,12 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
         temperature = min(2.0, max(0.0, temperature))
         base_prompt = (config and config.get("system_prompt")) or _DEFAULT_SYSTEM_PROMPT
         candidate_name = first_name or "Candidato(a)"
-        system_prompt = f"{base_prompt}\n\nO nome do candidato nesta conversa é: {candidate_name}."
+        ctx_data = _contexto_data_hora_sp()
+        system_prompt = (
+            f"{base_prompt}\n\n"
+            f"O nome do candidato nesta conversa é: {candidate_name}.\n\n"
+            f"[REFERÊNCIA DE DATA/HORA] {ctx_data}"
+        )
 
         memory = get_memory(phone_id, limit=16)
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
