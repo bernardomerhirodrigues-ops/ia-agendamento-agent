@@ -1,11 +1,73 @@
 import json
 import logging
+import time
 import httpx
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from .config import BASE_URL, API_KEY
 
 logger = logging.getLogger(__name__)
+
+# Máximo de caracteres por mensagem antes de quebrar (mais humano enviar em partes)
+MAX_CHARS_PER_MESSAGE = 500
+# Segundos entre mensagens quando enviamos várias (comportamento mais humano)
+DELAY_BETWEEN_MESSAGES_SEC = 1.5
+
+
+def _split_message_for_human_send(text: str) -> List[str]:
+    """
+    Divide o texto em partes por parágrafos (quebra de linha dupla) e, se necessário,
+    por tamanho, para envio em múltiplas mensagens mais naturais.
+    """
+    if not text or not text.strip():
+        return []
+    normalized = text.replace("\r\n", "\n").strip()
+    # Primeiro: separar por parágrafos (\n\n)
+    parts = [p.strip() for p in normalized.split("\n\n") if p.strip()]
+    if not parts:
+        return [normalized]
+    result: List[str] = []
+    for p in parts:
+        if len(p) <= MAX_CHARS_PER_MESSAGE:
+            result.append(p)
+        else:
+            # Parágrafo longo: quebrar por linha (\n)
+            lines = [ln.strip() for ln in p.split("\n") if ln.strip()]
+            if not lines:
+                lines = [p]
+            current: List[str] = []
+            current_len = 0
+            for line in lines:
+                if len(line) > MAX_CHARS_PER_MESSAGE:
+                    if current:
+                        result.append("\n".join(current))
+                        current = []
+                        current_len = 0
+                    # Linha muito longa: quebrar por tamanho (tentando no espaço)
+                    rest = line
+                    while rest:
+                        if len(rest) <= MAX_CHARS_PER_MESSAGE:
+                            result.append(rest)
+                            break
+                        chunk = rest[:MAX_CHARS_PER_MESSAGE]
+                        last_space = chunk.rfind(" ")
+                        if last_space > MAX_CHARS_PER_MESSAGE // 2:
+                            chunk = chunk[:last_space]
+                            rest = rest[last_space:].lstrip()
+                        else:
+                            rest = rest[MAX_CHARS_PER_MESSAGE:]
+                        result.append(chunk)
+                elif current_len + len(line) + 1 <= MAX_CHARS_PER_MESSAGE and current:
+                    current.append(line)
+                    current_len += len(line) + 1
+                else:
+                    if current:
+                        result.append("\n".join(current))
+                    current = [line]
+                    current_len = len(line)
+            if current:
+                result.append("\n".join(current))
+    return result if result else [normalized]
 
 
 def _headers() -> dict:
@@ -69,9 +131,9 @@ def get_entrevistador() -> Optional[str]:
         return None
 
 
-def send_whatsapp_message(phone: str, message: str) -> bool:
+def _send_one_message(phone: str, message: str) -> bool:
+    """Envia uma única mensagem (uma chamada HTTP)."""
     if not BASE_URL or not API_KEY:
-        logger.warning("send_whatsapp_message: BASE_URL or API_KEY not set")
         return False
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -113,3 +175,22 @@ def send_whatsapp_message(phone: str, message: str) -> bool:
     except Exception as e:
         logger.exception("send_whatsapp_message failed: %s", e)
         return False
+
+
+def send_whatsapp_message(phone: str, message: str) -> bool:
+    """
+    Envia a mensagem ao WhatsApp. Se for longa, divide por parágrafos (quebra de linha)
+    e envia em várias mensagens com pequena pausa entre elas (comportamento mais humano).
+    """
+    chunks = _split_message_for_human_send(message)
+    if not chunks:
+        return True
+    if len(chunks) == 1:
+        return _send_one_message(phone, chunks[0])
+    ok = True
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(DELAY_BETWEEN_MESSAGES_SEC)
+        if not _send_one_message(phone, chunk):
+            ok = False
+    return ok
