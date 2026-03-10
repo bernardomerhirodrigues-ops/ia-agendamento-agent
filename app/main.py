@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -21,6 +22,7 @@ from .db import (
     mark_human_takeover_chat,
     is_chat_human_takeover,
     get_phones_with_buffer_older_than_seconds,
+    reset_handed_to_human,
 )
 from .agent import run_agent_with_openai
 from .config import BASE_URL
@@ -415,11 +417,39 @@ async def webhook_whatsapp(
     if chat_id and is_chat_human_takeover(str(chat_id).strip()):
         logger.info("webhook/whatsapp: chat já em atendimento humano, ignorando chat_id=%s", str(chat_id)[:30])
         return JSONResponse(content={"received": True}, status_code=200)
-    # Não processar se o candidato já confirmou que quer falar com atendente
+    # Não processar se o candidato já confirmou que quer falar com atendente (respeitando bloqueio temporário)
     conv = get_conversation(phone)
     if conv and (conv.get("flow_status") or "").strip() == "handed_to_human":
-        logger.info("webhook/whatsapp: conversa handed_to_human, ignorando phone=%s", phone[:6] + "****" if len(phone) > 6 else "****")
-        return JSONResponse(content={"received": True}, status_code=200)
+        block_minutes = 0
+        try:
+            config = get_agent_config()
+            block_minutes = max(0, int(config.get("human_takeover_block_minutes") or 0))
+        except Exception:
+            pass
+        if block_minutes <= 0:
+            logger.info("webhook/whatsapp: conversa handed_to_human (bloqueio permanente), ignorando phone=%s", phone[:6] + "****" if len(phone) > 6 else "****")
+            return JSONResponse(content={"received": True}, status_code=200)
+        handed_at = conv.get("handed_at")
+        if handed_at:
+            if isinstance(handed_at, str):
+                try:
+                    handed_at = datetime.fromisoformat(handed_at.replace("Z", "+00:00"))
+                except ValueError:
+                    handed_at = None
+            if handed_at and handed_at.tzinfo is None:
+                handed_at = handed_at.replace(tzinfo=timezone.utc)
+            if handed_at:
+                expiry = handed_at + timedelta(minutes=block_minutes)
+                now = datetime.now(timezone.utc)
+                if now >= expiry:
+                    reset_handed_to_human(phone)
+                    logger.info("webhook/whatsapp: bloqueio handed_to_human expirado, reativando agente phone=%s", phone[:6] + "****" if len(phone) > 6 else "****")
+                else:
+                    logger.info("webhook/whatsapp: conversa handed_to_human (bloqueio %s min), ignorando phone=%s", block_minutes, phone[:6] + "****" if len(phone) > 6 else "****")
+                    return JSONResponse(content={"received": True}, status_code=200)
+        else:
+            logger.info("webhook/whatsapp: conversa handed_to_human (sem handed_at), ignorando phone=%s", phone[:6] + "****" if len(phone) > 6 else "****")
+            return JSONResponse(content={"received": True}, status_code=200)
     raw_text = payload.get("text")
     if isinstance(raw_text, dict):
         text = (raw_text.get("body") or raw_text.get("text") or "").strip()

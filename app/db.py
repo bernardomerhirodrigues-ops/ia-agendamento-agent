@@ -66,7 +66,7 @@ def get_conversation(phone_id: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, phone_id, first_name, flow_status, current_slot_date, current_slot_time, current_responsible, schedule_id FROM ia_agendamento_conversation WHERE phone_id = %s",
+                "SELECT id, phone_id, first_name, flow_status, handed_at, current_slot_date, current_slot_time, current_responsible, schedule_id FROM ia_agendamento_conversation WHERE phone_id = %s",
                 (phone_id,),
             )
             return cur.fetchone()
@@ -83,14 +83,20 @@ def upsert_conversation(
 ) -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # Ao marcar handed_to_human, grava handed_at = NOW() na primeira vez; ao voltar para start, limpa handed_at
             cur.execute(
                 """
-                INSERT INTO ia_agendamento_conversation (phone_id, first_name, flow_status, current_slot_date, current_slot_time, current_responsible, schedule_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO ia_agendamento_conversation (phone_id, first_name, flow_status, handed_at, current_slot_date, current_slot_time, current_responsible, schedule_id)
+                VALUES (%s, %s, %s, IF(%s = 'handed_to_human', CURRENT_TIMESTAMP, NULL), %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     updated_at = CURRENT_TIMESTAMP,
                     first_name = COALESCE(%s, first_name),
                     flow_status = COALESCE(%s, flow_status),
+                    handed_at = CASE
+                        WHEN COALESCE(%s, flow_status) = 'handed_to_human' THEN IFNULL(handed_at, CURRENT_TIMESTAMP)
+                        WHEN COALESCE(%s, flow_status) = 'start' THEN NULL
+                        ELSE handed_at
+                    END,
                     current_slot_date = COALESCE(%s, current_slot_date),
                     current_slot_time = COALESCE(%s, current_slot_time),
                     current_responsible = COALESCE(%s, current_responsible),
@@ -100,17 +106,30 @@ def upsert_conversation(
                     phone_id,
                     first_name,
                     flow_status or "start",
+                    flow_status or "start",
                     current_slot_date,
                     current_slot_time,
                     current_responsible,
                     schedule_id,
                     first_name,
                     flow_status,
+                    flow_status,
+                    flow_status,
                     current_slot_date,
                     current_slot_time,
                     current_responsible,
                     schedule_id,
                 ),
+            )
+
+
+def reset_handed_to_human(phone_id: str) -> None:
+    """Reativa o agente após bloqueio temporário: volta flow_status para start e limpa handed_at."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE ia_agendamento_conversation SET flow_status = 'start', handed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE phone_id = %s",
+                (phone_id,),
             )
 
 
@@ -138,7 +157,7 @@ def get_agent_config() -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
+                "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds, human_takeover_block_minutes FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
             )
             return cur.fetchone()
 
