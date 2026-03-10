@@ -126,6 +126,9 @@ IMPORTANTE:
 5. Quando o candidato perguntar "qual o último horário?" ou "até que horas?"
    - NUNCA invente um horário. Chame get_next_slot com last_available_for_date = data do dia em questão (ex.: amanhã = use a data de amanhã do bloco [REFERÊNCIA] em YYYY-MM-DD). A ferramenta retorna o verdadeiro último horário disponível daquele dia (ex.: se 17h40, 17h20 e 17h estão ocupados, retorna 16h40). Responda exatamente com o horário retornado.
 
+5b. Quando o candidato sugerir um horário específico (ex.: "tem 15h30?", "pode ser 14h?", "por volta das 10h30")
+   - Os horários de entrevista são em intervalos fixos (ex.: 09h00, 09h20, 09h40). Se o candidato disser um horário "intermediário" como 15h30, use get_next_slot com min_date = data do dia em que ele quer (ou hoje se não especificou) e near_time = horário em HH:MM (ex.: "15:30", "14:00", "10:30"). A ferramenta retorna o slot disponível **mais próximo** desse horário (ex.: 15h30 → 15h20 ou 15h40). Sugira esse horário como "o mais próximo que tenho" (ex.: "O mais próximo que tenho é 15h20, pode ser?").
+
 6. Sem horários disponíveis
    - Se get_next_slot indicar que não há horários disponíveis:
      - Avise com educação e **não invente** horário.
@@ -203,7 +206,8 @@ def _contexto_data_hora_sp() -> str:
         f"Data de AMANHÃ para min_date: {amanha_iso}. "
         f"Regras para get_next_slot: (1) Candidato disse 'amanhã' → min_date={amanha_iso}. "
         f"(2) Candidato disse 'à tarde' ou 'tarde' → min_time='13:00'. "
-        f"(3) 'Amanhã à tarde' ou 'tarde de amanhã' → use na MESMA chamada min_date={amanha_iso} E min_time='13:00'."
+        f"(3) 'Amanhã à tarde' ou 'tarde de amanhã' → use na MESMA chamada min_date={amanha_iso} E min_time='13:00'. "
+        f"(4) Candidato sugerir horário específico (ex.: 15h30, 14h, 10h30) → min_date=data do dia e near_time='HH:MM' (ex.: near_time='15:30'); retorna o slot disponível mais próximo."
     )
 
 
@@ -246,12 +250,13 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "get_next_slot",
-                    "description": "Obtém horário disponível. Para 'amanhã à tarde': min_date=amanhã e min_time='13:00'. Para 'tarde' use min_time='13:00'. Para 'qual o último horário?' ou 'até que horas?' use last_available_for_date=data do dia (YYYY-MM-DD); retorna o último slot livre daquele dia (ex.: se 17h40/17h20/17h ocupados, retorna 16h40).",
+                    "description": "Obtém horário disponível. Para 'amanhã à tarde': min_date=amanhã e min_time='13:00'. Para 'tarde' use min_time='13:00'. Para 'qual o último horário?' ou 'até que horas?' use last_available_for_date=data do dia (YYYY-MM-DD). Quando o candidato sugerir um horário específico (ex.: 15h30, 14h, 10h30) use min_date e near_time (HH:MM) para obter o slot disponível mais próximo desse horário.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "min_date": {"type": "string", "description": "Data mínima YYYY-MM-DD. Para 'amanhã à tarde' use esta data e min_time='13:00'."},
+                            "min_date": {"type": "string", "description": "Data mínima YYYY-MM-DD. Para 'amanhã à tarde' use esta data e min_time='13:00'. Para horário preferido (near_time) use a data do dia desejado."},
                             "min_time": {"type": "string", "description": "Hora mínima HH:MM. Use '13:00' para 'à tarde'."},
+                            "near_time": {"type": "string", "description": "Horário preferido em HH:MM (ex.: '15:30', '14:00'). Use quando o candidato disser 'tem 15h30?', 'pode ser 14h?', 'por volta das 10h30'. Retorna o slot disponível mais próximo desse horário (ex.: 15h30 → 15h20 ou 15h40). Informe também min_date com a data do dia."},
                             "last_available_for_date": {"type": "string", "description": "Data YYYY-MM-DD. Use quando o candidato perguntar 'qual o último horário?' ou 'até que horas?' para obter o último horário disponível daquele dia. Retorna o verdadeiro último slot livre (ex.: 16h40 se 17h, 17h20 e 17h40 estão ocupados)."},
                             "preferred_responsible": {
                                 "type": "string",
@@ -318,6 +323,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                             args.get("preferred_responsible") or None,
                             args.get("min_time") or None,
                             args.get("last_available_for_date") or None,
+                            args.get("near_time") or None,
                         )
                         result = slot or {"error": "Nenhum horário disponível"}
                     elif name == "reserve_slot":
