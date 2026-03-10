@@ -1,16 +1,28 @@
+import asyncio
 import json
 import logging
 import os
 import uuid
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from .config import WEBHOOK_SECRET
-from .db import is_message_processed, try_mark_message_processed, get_agent_config
+from .db import (
+    get_agent_config,
+    try_mark_message_processed,
+    add_to_message_buffer,
+    get_buffered_messages,
+    delete_buffer_for_phone,
+    mark_message_processed,
+    get_phones_with_buffer_older_than_seconds,
+)
 from .agent import run_agent_with_openai
 from .php_client import send_whatsapp_message
+
+# Tarefas agendadas de flush do buffer por phone (canceladas quando chega nova mensagem)
+_pending_flush_tasks: Dict[str, asyncio.Task] = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,9 +33,54 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="IA Agendamento Agent", version="1.0.0")
 
 
+@app.on_event("startup")
+async def startup_flush_orphaned_buffers():
+    """Ao subir o serviço, processa buffers órfãos (ex.: após restart)."""
+    try:
+        config = get_agent_config()
+        sec = max(0, int(config.get("message_buffer_seconds") or 0))
+        if sec <= 0:
+            return
+        phones = get_phones_with_buffer_older_than_seconds(sec)
+        for phone in phones:
+            await _flush_buffer(phone)
+        if phones:
+            logger.info("startup: flush de %d buffer(s) órfão(s)", len(phones))
+    except Exception as e:
+        logger.warning("startup flush buffers: %s", e)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "ia-agendamento-agent"}
+
+
+async def _flush_buffer(phone: str) -> None:
+    """Processa mensagens do buffer para o phone: junta textos, marca como processadas, chama agente e envia resposta."""
+    global _pending_flush_tasks
+    _pending_flush_tasks.pop(phone, None)
+    try:
+        rows = get_buffered_messages(phone)
+        if not rows:
+            return
+        aggregated = " ".join((r.get("text_content") or "").strip() for r in rows)
+        first_name = (rows[-1].get("first_name") or "").strip() if rows else ""
+        message_ids = [r.get("message_id") for r in rows if r.get("message_id")]
+        for mid in message_ids:
+            mark_message_processed(mid, phone)
+        delete_buffer_for_phone(phone)
+        if not aggregated.strip():
+            reply = "Olá! Para agendar sua entrevista, por favor envie uma mensagem (por exemplo: 'Quero agendar entrevista')."
+        else:
+            try:
+                reply = run_agent_with_openai(phone, first_name, aggregated.strip())
+            except Exception as e:
+                logger.exception("run_agent_with_openai failed in flush: %s", e)
+                reply = "Desculpe, tive um problema técnico. Pode tentar novamente em instantes?"
+        logger.info("webhook/whatsapp: flush buffer phone=%s messages=%d reply_len=%d", phone[:6] + "****", len(rows), len(reply))
+        send_whatsapp_message(phone, reply)
+    except Exception as e:
+        logger.exception("flush_buffer failed for phone %s: %s", phone[:8], e)
 
 
 @app.post("/webhook/test")
@@ -222,7 +279,27 @@ async def webhook_whatsapp(
     if not phone:
         return JSONResponse(content={"received": True}, status_code=200)
 
-    # Idempotência: inserir primeiro evita race quando 2 webhooks (ex.: Treinee) chegam juntos
+    buffer_seconds = 0
+    try:
+        config = get_agent_config()
+        buffer_seconds = max(0, int(config.get("message_buffer_seconds") or 0))
+    except Exception:
+        pass
+
+    if buffer_seconds > 0:
+        # Buffer ativo: adiciona ao buffer e agenda flush (ou reinicia o timer)
+        added = add_to_message_buffer(phone, message_id or ("buf-" + uuid.uuid4().hex), text, first_name)
+        if not added:
+            logger.info("webhook/whatsapp: mensagem já no buffer (duplicata), message_id=%s", (message_id or "")[:30])
+            return JSONResponse(content={"received": True}, status_code=200)
+        global _pending_flush_tasks
+        if phone in _pending_flush_tasks:
+            _pending_flush_tasks[phone].cancel()
+        _pending_flush_tasks[phone] = asyncio.create_task(_schedule_flush(phone, buffer_seconds))
+        logger.info("webhook/whatsapp: mensagem adicionada ao buffer, flush em %ds", buffer_seconds)
+        return JSONResponse(content={"received": True}, status_code=200)
+
+    # Sem buffer: idempotência e processamento imediato
     if message_id:
         if not try_mark_message_processed(message_id, phone):
             logger.info("webhook/whatsapp: duplicate message_id ignored", extra={"message_id": message_id[:30] if message_id else "(vazio)"})
@@ -242,3 +319,12 @@ async def webhook_whatsapp(
     logger.info("webhook/whatsapp: enviando resposta via PHP", extra={"phone_masked": phone[:6] + "****" if len(phone) > 6 else "****", "reply_len": len(reply)})
     send_whatsapp_message(phone, reply)
     return JSONResponse(content={"received": True}, status_code=200)
+
+
+async def _schedule_flush(phone: str, seconds: int) -> None:
+    """Aguarda seconds e chama _flush_buffer(phone)."""
+    try:
+        await asyncio.sleep(seconds)
+    except asyncio.CancelledError:
+        pass
+    await _flush_buffer(phone)

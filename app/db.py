@@ -138,6 +138,49 @@ def get_agent_config() -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
+                "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
             )
             return cur.fetchone()
+
+
+def add_to_message_buffer(phone_id: str, message_id: str, text_content: str, first_name: str = "") -> bool:
+    """Insere mensagem no buffer. Retorna True se inseriu, False se duplicata (message_id já existe)."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT IGNORE INTO ia_agendamento_message_buffer (phone_id, message_id, text_content, first_name) VALUES (%s, %s, %s, %s)",
+                (phone_id, message_id, (text_content or "")[:16000], (first_name or "")[:255]),
+            )
+            return cur.rowcount == 1
+
+
+def get_buffered_messages(phone_id: str) -> List[Dict[str, Any]]:
+    """Retorna mensagens do buffer para o phone, ordenadas por created_at."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT message_id, text_content, first_name, created_at FROM ia_agendamento_message_buffer WHERE phone_id = %s ORDER BY created_at ASC",
+                (phone_id,),
+            )
+            return cur.fetchall()
+
+
+def delete_buffer_for_phone(phone_id: str) -> None:
+    """Remove todas as mensagens do buffer para o phone (após processar)."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM ia_agendamento_message_buffer WHERE phone_id = %s", (phone_id,))
+
+
+def get_phones_with_buffer_older_than_seconds(seconds: int) -> List[str]:
+    """Retorna phone_ids que têm mensagens no buffer com a mais antiga há mais de seconds segundos."""
+    if seconds <= 0:
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT phone_id FROM ia_agendamento_message_buffer GROUP BY phone_id "
+                "HAVING MIN(created_at) < DATE_SUB(NOW(), INTERVAL %s SECOND)",
+                (seconds,),
+            )
+            return [row["phone_id"] for row in cur.fetchall()]
