@@ -78,13 +78,18 @@ def _headers() -> dict:
     }
 
 
-def get_next_slot() -> Optional[Dict[str, Any]]:
+def get_next_slot(min_date: Optional[str] = None, preferred_responsible: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not BASE_URL or not API_KEY:
         logger.warning("BASE_URL or API_KEY not set")
         return None
+    params: Dict[str, Any] = {}
+    if min_date:
+        params["min_date"] = min_date
+    if preferred_responsible:
+        params["preferred_responsible"] = preferred_responsible
     try:
         with httpx.Client(timeout=15.0) as client:
-            r = client.get(f"{BASE_URL}/api/agent/next-slot", headers=_headers())
+            r = client.get(f"{BASE_URL}/api/agent/next-slot", headers=_headers(), params=params)
             r.raise_for_status()
             data = r.json()
             if data.get("success") and data.get("slot"):

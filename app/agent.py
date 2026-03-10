@@ -204,7 +204,19 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "get_next_slot",
-                    "description": "Obtém o próximo horário disponível para entrevista. Retorna date (YYYY-MM-DD), time (HH:MM) e entrevistador. Use sempre que for sugerir um horário.",
+                    "description": "Obtém o próximo horário disponível para entrevista. Retorna date (YYYY-MM-DD), time (HH:MM) e entrevistador. Use sempre que for sugerir um horário. Pode receber min_date (YYYY-MM-DD) para começar a buscar a partir de uma data mínima e preferred_responsible ('default', 'substitute' ou 'any') para priorizar entrevistador padrão ou substituto.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "min_date": {"type": "string", "description": "Data mínima (YYYY-MM-DD) a partir da qual o horário deve ser buscado. Use quando o candidato pedir outro dia ou uma data específica."},
+                            "preferred_responsible": {
+                                "type": "string",
+                                "description": "Preferência de entrevistador: 'default' (padrão), 'substitute' (substituto) ou 'any'. Use 'substitute' quando o candidato pedir outro entrevistador.",
+                                "enum": ["default", "substitute", "any"],
+                            },
+                        },
+                        "required": [],
+                    },
                 },
             },
             {
@@ -257,7 +269,10 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                         except Exception:
                             pass
                     if name == "get_next_slot":
-                        slot = get_next_slot()
+                        slot = get_next_slot(
+                            args.get("min_date") or None,
+                            args.get("preferred_responsible") or None,
+                        )
                         result = slot or {"error": "Nenhum horário disponível"}
                     elif name == "reserve_slot":
                         r = reserve_slot(
