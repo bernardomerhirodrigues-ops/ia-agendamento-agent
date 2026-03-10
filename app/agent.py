@@ -5,7 +5,7 @@ from typing import Dict, List
 from openai import OpenAI
 
 from .config import OPENAI_API_KEY
-from .db import get_agent_config, get_memory, add_memory
+from .db import get_agent_config, get_memory, add_memory, upsert_conversation
 from .php_client import get_next_slot, reserve_slot, get_entrevistador
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,11 @@ REGRAS:
 5. Se o retorno de reserve_slot indicar sucesso, envie a confirmação com data, hora e nome do entrevistador. Se indicar erro, peça para tentar outro horário.
 6. Seja breve: mensagens curtas funcionam melhor no WhatsApp.
 7. Se não houver horários disponíveis, informe com educação e sugira tentar em outro momento.
-8. Cumprimente ao início e agradeça ao final quando apropriado."""
+8. Cumprimente ao início e agradeça ao final quando apropriado.
+
+PASSAGEM PARA ATENDENTE HUMANO:
+- Se o candidato disser que quer falar com um humano, atendente ou pessoa (ex.: "quero falar com alguém", "tem um humano?", "atendente"): explique brevemente que você pode ajudar a agendar a entrevista e pergunte se mesmo assim deseja falar com um atendente. Exemplo: "Posso ajudar a agendar sua entrevista por aqui. Se preferir falar com um atendente, responda 'sim' ou 'confirmo'."
+- Quando o candidato CONFIRMAR que quer falar com um atendente (sim, quero, confirmo, por favor): chame a ferramenta hand_over_to_human e, em seguida, envie UMA mensagem curta informando que um atendente irá responder em breve (ex.: "Entendido. Um atendente irá responder em breve."). Não envie mais nada após isso."""
 
 
 def _normalize_phone(phone: str) -> str:
@@ -94,6 +98,13 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                     "description": "Retorna o nome do entrevistador padrão.",
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "hand_over_to_human",
+                    "description": "Desativa o agente e passa a conversa para um atendente humano. Use APENAS quando o candidato tiver confirmado que deseja falar com um atendente (após você ter perguntado). Após chamar, envie uma mensagem curta dizendo que um atendente irá responder em breve.",
+                },
+            },
         ]
 
         final_content = FALLBACK_MSG
@@ -125,6 +136,10 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                         logger.info("reserve_slot called: date=%s time=%s result=%s", args.get("date"), args.get("time"), "ok" if r else "fail")
                     elif name == "get_entrevistador":
                         result = {"nome_entrevistador": get_entrevistador() or ""}
+                    elif name == "hand_over_to_human":
+                        upsert_conversation(phone_id, flow_status="handed_to_human")
+                        result = {"ok": True, "message": "Conversa passada para atendente humano. Envie uma mensagem curta ao candidato."}
+                        logger.info("hand_over_to_human called for phone_id=%s", phone_id[:8] + "****")
                     else:
                         result = {}
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})

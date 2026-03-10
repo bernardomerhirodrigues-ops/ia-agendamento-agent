@@ -11,11 +11,14 @@ from fastapi.responses import JSONResponse
 from .config import WEBHOOK_SECRET
 from .db import (
     get_agent_config,
+    get_conversation,
     try_mark_message_processed,
     add_to_message_buffer,
     get_buffered_messages,
     delete_buffer_for_phone,
     mark_message_processed,
+    mark_human_takeover_chat,
+    is_chat_human_takeover,
     get_phones_with_buffer_older_than_seconds,
 )
 from .agent import run_agent_with_openai
@@ -60,6 +63,11 @@ async def _flush_buffer(phone: str) -> None:
     global _pending_flush_tasks
     _pending_flush_tasks.pop(phone, None)
     try:
+        conv = get_conversation(phone)
+        if conv and (conv.get("flow_status") or "").strip() == "handed_to_human":
+            delete_buffer_for_phone(phone)
+            logger.info("webhook/whatsapp: flush cancelado (handed_to_human) phone=%s", phone[:6] + "****")
+            return
         rows = get_buffered_messages(phone)
         if not rows:
             return
@@ -226,11 +234,15 @@ async def webhook_whatsapp(
     except Exception:
         body = {}
 
-    # Ignorar mensagens enviadas PELO negócio (fromMe=true)
+    # Ignorar mensagens enviadas PELO negócio (fromMe=true) e marcar chat como assumido por humano
     from_me = body.get("fromMe") if isinstance(body, dict) else None
     if from_me is None and isinstance(body.get("key"), dict):
         from_me = body["key"].get("fromMe")
     if from_me is True:
+        chat_id = body.get("phone") or (body.get("key") or {}).get("remoteJid") or ""
+        if chat_id:
+            mark_human_takeover_chat(str(chat_id).strip())
+            logger.info("webhook/whatsapp: fromMe=true, chat marcado como humano takeover chat_id=%s", str(chat_id)[:30])
         logger.info("webhook/whatsapp: ignorando mensagem fromMe=true (enviada pelo negócio)")
         return JSONResponse(content={"received": True}, status_code=200)
 
@@ -263,6 +275,17 @@ async def webhook_whatsapp(
 
     message_id = payload.get("message_id") or ""
     phone = payload.get("phone") or ""
+    chat_id = body.get("phone") or (body.get("key") or {}).get("remoteJid") or ""
+
+    # Não processar se este chat foi assumido por humano (mensagem manual do negócio)
+    if chat_id and is_chat_human_takeover(str(chat_id).strip()):
+        logger.info("webhook/whatsapp: chat já em atendimento humano, ignorando chat_id=%s", str(chat_id)[:30])
+        return JSONResponse(content={"received": True}, status_code=200)
+    # Não processar se o candidato já confirmou que quer falar com atendente
+    conv = get_conversation(phone)
+    if conv and (conv.get("flow_status") or "").strip() == "handed_to_human":
+        logger.info("webhook/whatsapp: conversa handed_to_human, ignorando phone=%s", phone[:6] + "****" if len(phone) > 6 else "****")
+        return JSONResponse(content={"received": True}, status_code=200)
     raw_text = payload.get("text")
     if isinstance(raw_text, dict):
         text = (raw_text.get("body") or raw_text.get("text") or "").strip()

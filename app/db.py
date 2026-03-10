@@ -184,3 +184,28 @@ def get_phones_with_buffer_older_than_seconds(seconds: int) -> List[str]:
                 (seconds,),
             )
             return [row["phone_id"] for row in cur.fetchall()]
+
+
+def mark_human_takeover_chat(chat_id: str) -> None:
+    """Registra que um humano assumiu este chat (ex.: mensagem enviada pelo negócio). O agente não responderá mais."""
+    if not (chat_id or "").strip():
+        return
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT IGNORE INTO ia_agendamento_human_takeover (chat_id) VALUES (%s)",
+                (chat_id.strip(),),
+            )
+
+
+def is_chat_human_takeover(chat_id: str) -> bool:
+    """Retorna True se este chat foi marcado como assumido por humano."""
+    if not (chat_id or "").strip():
+        return False
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM ia_agendamento_human_takeover WHERE chat_id = %s LIMIT 1",
+                (chat_id.strip(),),
+            )
+            return cur.fetchone() is not None
