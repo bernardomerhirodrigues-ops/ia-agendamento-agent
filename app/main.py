@@ -12,6 +12,7 @@ from .config import WEBHOOK_SECRET
 from .db import (
     get_agent_config,
     get_conversation,
+    get_memory,
     try_mark_message_processed,
     add_to_message_buffer,
     get_buffered_messages,
@@ -353,15 +354,29 @@ async def webhook_whatsapp(
     except Exception:
         body = {}
 
-    # Ignorar mensagens enviadas PELO negócio (fromMe=true) e marcar chat como assumido por humano
+    # Ignorar mensagens enviadas PELO negócio (fromMe=true). Só marcar "human takeover" se já existir conversa com o agente (intervenção no meio do fluxo).
+    # Assim, quando o negócio envia o primeiro contato (convite), o candidato pode responder e o agente fará o agendamento.
     from_me = body.get("fromMe") if isinstance(body, dict) else None
     if from_me is None and isinstance(body.get("key"), dict):
         from_me = body["key"].get("fromMe")
     if from_me is True:
         chat_id = body.get("phone") or (body.get("key") or {}).get("remoteJid") or ""
         if chat_id:
-            mark_human_takeover_chat(str(chat_id).strip())
-            logger.info("webhook/whatsapp: fromMe=true, chat marcado como humano takeover chat_id=%s", str(chat_id)[:30])
+            chat_id = str(chat_id).strip()
+            # Tentar obter phone do destinatário (candidato): em muitos payloads o chat_id é 5511999999999@s.whatsapp.net
+            candidate_phone = _normalize_phone((chat_id.split("@")[0] or "").strip())
+            # Só considera "já tinha conversa" se o chat_id for um número real (ex.: 55...); @lid pode não ser
+            has_prior_chat = (
+                len(candidate_phone) >= 12
+                and candidate_phone.startswith("55")
+                and get_memory(candidate_phone, limit=1)
+            )
+            if has_prior_chat:
+                # Já existe conversa com o agente → intervenção humana → desativa agente neste chat
+                mark_human_takeover_chat(chat_id)
+                logger.info("webhook/whatsapp: fromMe=true e conversa já existia, chat marcado como humano takeover")
+            else:
+                logger.info("webhook/whatsapp: fromMe=true (provável convite inicial), não marca takeover")
         logger.info("webhook/whatsapp: ignorando mensagem fromMe=true (enviada pelo negócio)")
         return JSONResponse(content={"received": True}, status_code=200)
 
