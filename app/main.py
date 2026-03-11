@@ -198,9 +198,8 @@ def _is_within_active_schedule(config: Optional[Dict[str, Any]]) -> bool:
 
 def _extract_connected_phone(body: dict) -> str:
     """
-    Extrai o número da instância/canal que recebeu a mensagem (número para o qual o usuário enviou).
-    Provedores podem enviar em: connectedPhone, instance, data.connectedPhone, data.instance, etc.
-    Retorna string normalizada ou vazio se não encontrar.
+    Extrai o número da instância/canal (uso legado; em alguns provedores connectedPhone = remetente).
+    Ver _extract_receiver_phone para o número que RECEBEU a mensagem.
     """
     if not body or not isinstance(body, dict):
         return ""
@@ -208,10 +207,9 @@ def _extract_connected_phone(body: dict) -> str:
         body.get("connectedPhone"),
         body.get("instance"),
         body.get("to"),
+        body.get("receiver"),
+        body.get("receiverPhone"),
         body.get("destination"),
-        body.get("instanceId"),
-        body.get("sessionId"),
-        body.get("me"),
     ]
     data = body.get("data")
     if isinstance(data, dict):
@@ -219,6 +217,41 @@ def _extract_connected_phone(body: dict) -> str:
             data.get("connectedPhone"),
             data.get("instance"),
             data.get("to"),
+            data.get("receiver"),
+        ])
+    for raw in candidates:
+        if not raw:
+            continue
+        s = str(raw).strip().split("@")[0]
+        normalized = _normalize_phone(s)
+        if len(normalized) >= 12 and normalized.startswith("55"):
+            return normalized
+    return ""
+
+
+def _extract_receiver_phone(body: dict) -> str:
+    """
+    Extrai o número que RECEBEU a mensagem (instância/canal de destino).
+    Não usa connectedPhone, pois em vários provedores connectedPhone = quem ENVIOU (remetente).
+    Usa apenas: receiver, to, receiverPhone, instance (se for número), destination, me.
+    """
+    if not body or not isinstance(body, dict):
+        return ""
+    candidates = [
+        body.get("receiver"),
+        body.get("to"),
+        body.get("receiverPhone"),
+        body.get("destination"),
+        body.get("me"),
+        body.get("instance"),  # em alguns provedores instance = número da instância que recebeu
+    ]
+    data = body.get("data")
+    if isinstance(data, dict):
+        candidates.extend([
+            data.get("receiver"),
+            data.get("to"),
+            data.get("receiverPhone"),
+            data.get("instance"),
         ])
     for raw in candidates:
         if not raw:
@@ -492,18 +525,15 @@ async def webhook_whatsapp(
         logger.info("webhook/whatsapp: agente desativado ou sem config, ignorando")
         return JSONResponse(content={"received": True}, status_code=200)
 
-    # Só processar quando a mensagem foi enviada PARA o número configurado (evita responder em número pessoal)
+    # Só processar quando a mensagem foi RECEBIDA pelo número configurado (evita responder em número pessoal).
+    # Atenção: em alguns provedores "connectedPhone" é quem ENVIOU (remetente), não quem recebeu. Por isso
+    # usamos apenas campos que indiquem o receptor/instância (receiver, to, instance, etc.), não connectedPhone.
     webhook_number = _normalize_phone(str((config.get("whatsapp_webhook_number") or "")).strip())
     if webhook_number:
-        connected = _extract_connected_phone(body)
-        if connected and connected != webhook_number:
-            logger.info("webhook/whatsapp: ignorando mensagem enviada para outro número (connected=%s, esperado=%s)", connected[:8] + "****", webhook_number[:8] + "****")
+        receiver = _extract_receiver_phone(body)
+        if receiver and receiver != webhook_number:
+            logger.info("webhook/whatsapp: ignorando mensagem recebida em outro número (receiver=%s, esperado=%s)", receiver[:8] + "****", webhook_number[:8] + "****")
             return JSONResponse(content={"received": True}, status_code=200)
-        if not connected:
-            logger.info(
-                "webhook/whatsapp: whatsapp_webhook_number configurado; payload sem número da instância (connectedPhone/instance). "
-                "Processando todas as mensagens. Para filtrar por número, o provedor deve enviar no webhook o número que recebeu a mensagem."
-            )
 
     # Respeitar dias e horários ativos (Painel de Controle)
     if not _is_within_active_schedule(config):
