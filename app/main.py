@@ -358,10 +358,14 @@ async def webhook_whatsapp(
 
     # Log completo do webhook recebido (útil para depuração de formato do provedor/Treinee)
     try:
-        logger.info("webhook/whatsapp raw body", extra={"body": body})
-    except Exception:
-        # Se por algum motivo o objeto não for serializável em JSON pelos handlers de log, ignora o erro
-        logger.debug("webhook/whatsapp: falha ao logar body bruto")
+        raw_json = json.dumps(body, ensure_ascii=False, default=str)
+        # Limite para não estourar log (ex.: mídia com URLs grandes); ajuste se precisar ver tudo
+        max_log_len = 8000
+        if len(raw_json) > max_log_len:
+            raw_json = raw_json[:max_log_len] + f"... [truncado, total {len(raw_json)} chars]"
+        logger.info("webhook/whatsapp raw body: %s", raw_json)
+    except Exception as e:
+        logger.warning("webhook/whatsapp: falha ao serializar body para log: %s", e)
 
     # Ignorar mensagens enviadas PELO negócio (fromMe=true). Só marcar "human takeover" se já existir conversa com o agente (intervenção no meio do fluxo).
     # Assim, quando o negócio envia o primeiro contato (convite), o candidato pode responder e o agente fará o agendamento.
