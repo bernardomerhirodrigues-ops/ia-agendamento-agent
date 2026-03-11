@@ -145,6 +145,40 @@ def _normalize_phone(phone: str) -> str:
     return s
 
 
+def _extract_connected_phone(body: dict) -> str:
+    """
+    Extrai o número da instância/canal que recebeu a mensagem (número para o qual o usuário enviou).
+    Provedores podem enviar em: connectedPhone, instance, data.connectedPhone, data.instance, etc.
+    Retorna string normalizada ou vazio se não encontrar.
+    """
+    if not body or not isinstance(body, dict):
+        return ""
+    candidates = [
+        body.get("connectedPhone"),
+        body.get("instance"),
+        body.get("to"),
+        body.get("destination"),
+        body.get("instanceId"),
+        body.get("sessionId"),
+        body.get("me"),
+    ]
+    data = body.get("data")
+    if isinstance(data, dict):
+        candidates.extend([
+            data.get("connectedPhone"),
+            data.get("instance"),
+            data.get("to"),
+        ])
+    for raw in candidates:
+        if not raw:
+            continue
+        s = str(raw).strip().split("@")[0]
+        normalized = _normalize_phone(s)
+        if len(normalized) >= 12 and normalized.startswith("55"):
+            return normalized
+    return ""
+
+
 def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
     """
     Extrai message_id, phone (from), text, first_name de um payload genérico.
@@ -407,10 +441,15 @@ async def webhook_whatsapp(
     except Exception:
         pass
     if webhook_number:
-        connected = _normalize_phone(str(body.get("connectedPhone", "")).split("@")[0])
+        connected = _extract_connected_phone(body)
         if connected and connected != webhook_number:
             logger.info("webhook/whatsapp: ignorando mensagem enviada para outro número (connected=%s, esperado=%s)", connected[:8] + "****", webhook_number[:8] + "****")
             return JSONResponse(content={"received": True}, status_code=200)
+        if not connected:
+            logger.warning(
+                "webhook/whatsapp: whatsapp_webhook_number está configurado mas o payload não contém o número da instância (connectedPhone/instance/data.*). "
+                "Processando mesmo assim. Para filtrar por número, configure o provedor para enviar no webhook o número que recebeu a mensagem."
+            )
 
     _text_preview = ""
     if isinstance(body, dict):
