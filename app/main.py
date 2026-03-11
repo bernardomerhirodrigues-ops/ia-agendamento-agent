@@ -6,6 +6,11 @@ import uuid
 from datetime import datetime, timezone, timedelta, time as dt_time
 from typing import Any, Dict, Optional
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # type: ignore
+
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -145,10 +150,14 @@ def _normalize_phone(phone: str) -> str:
     return s
 
 
+# Fuso usado para dias/horários ativos (Painel de Controle). Render roda em UTC; o usuário configura em horário de Brasília.
+_ACTIVE_SCHEDULE_TZ = ZoneInfo("America/Sao_Paulo")
+
+
 def _is_within_active_schedule(config: Optional[Dict[str, Any]]) -> bool:
     """
     Verifica se o momento atual está dentro dos dias e horários ativos configurados.
-    Se não houver restrição (active_days e horários vazios), retorna True.
+    Usa horário de Brasília (America/Sao_Paulo); o servidor Render roda em UTC.
     active_days: 1=Segunda a 7=Domingo (PHP date('N')), separados por vírgula.
     """
     if not config:
@@ -158,7 +167,7 @@ def _is_within_active_schedule(config: Optional[Dict[str, Any]]) -> bool:
     end_raw = (config.get("active_time_end") or "").strip()
     if not active_days_raw and not start_raw and not end_raw:
         return True
-    now = datetime.now()
+    now = datetime.now(_ACTIVE_SCHEDULE_TZ)
     # Dia da semana: isoweekday() 1=Segunda .. 7=Domingo (igual ao PHP date('N'))
     if active_days_raw:
         allowed = [int(x) for x in active_days_raw.split(",") if x.strip().isdigit()]
