@@ -356,6 +356,13 @@ async def webhook_whatsapp(
     except Exception:
         body = {}
 
+    # Log completo do webhook recebido (útil para depuração de formato do provedor/Treinee)
+    try:
+        logger.info("webhook/whatsapp raw body", extra={"body": body})
+    except Exception:
+        # Se por algum motivo o objeto não for serializável em JSON pelos handlers de log, ignora o erro
+        logger.debug("webhook/whatsapp: falha ao logar body bruto")
+
     # Ignorar mensagens enviadas PELO negócio (fromMe=true). Só marcar "human takeover" se já existir conversa com o agente (intervenção no meio do fluxo).
     # Assim, quando o negócio envia o primeiro contato (convite), o candidato pode responder e o agente fará o agendamento.
     from_me = body.get("fromMe") if isinstance(body, dict) else None
