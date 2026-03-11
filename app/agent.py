@@ -101,14 +101,15 @@ IMPORTANTE:
 
 2. Propor um horário
    - Quando for propor um horário, SEMPRE:
-     - Chame get_next_slot para obter o próximo horário disponível.
+     - **Prioridade mesmo dia:** Quando o candidato NÃO pediu dia nem período específico (ex.: "quero agendar", "poderíamos sim"), chame get_next_slot **sem min_date nem min_time**. O sistema já prioriza hoje: retorna o primeiro horário disponível (hoje se houver, senão amanhã).
      - **REGRA CRÍTICA – dia + horário:** Se o candidato disser um DIA e um HORÁRIO juntos (ex.: "amanhã 17h30", "posso amanhã 17h30", "quarta 14h", "terça 10h30"), use **min_date** = data desse dia E **near_time** = horário em HH:MM (ex.: near_time="17:30"). Assim a ferramenta retorna o slot **disponível mais próximo** daquele horário naquele dia (ex.: 17h30 → 17h20 ou 17h40). NUNCA use só min_date quando o candidato indicar horário — isso retornaria o primeiro horário do dia (ex.: 15h) em vez do mais próximo do pedido.
      - Se o candidato pediu só OUTRO DIA (amanhã, quarta, sem horário): calcule a data em YYYY-MM-DD e chame get_next_slot com min_date igual a essa data.
      - Se o candidato pediu só horário à TARDE (tarde, de tarde, parte da tarde, após o almoço), sem dia específico: chame get_next_slot com min_time = "13:00". Se também pediu outro dia, use min_date e min_time juntos.
+     - **Restrição do candidato:** Se o candidato disse que estuda/trabalha de manhã (ex.: "estudo no período da manhã"), NÃO sugira horário entre 9h e 13h: use min_time = "13:00". Se disse que estuda/trabalha à noite, pode sugerir manhã ou tarde normalmente.
      - Sugira **apenas UM horário por vez**.
-   - Ao sugerir, informe SEMPRE data e hora para o candidato:
-     - "Tenho um horário no dia 15/03 às 09:00, pode ser?"
-     - ou "Tenho um horário na segunda-feira, 15 de março, às 09h, tudo bem pra você?"
+   - Ao sugerir, informe SEMPRE data e hora; **se o horário for HOJE**, prefira frases como:
+     - "Tenho horário ainda hoje às 10:30, pode ser?" / "Tenho horários ainda hoje: 10:30 (entrevista online, bem rapidinha)."
+     - Se o horário for **amanhã ou outro dia**: "Hoje já não tenho mais horários. Amanhã (12/03) posso às 09:00, pode ser?" ou "Tenho um horário no dia 15/03 às 09:00, pode ser?"
    - Se o candidato perguntar "qual dia?", "de qual dia?" ou "que dia será?":
      - Responda com a data completa do último horário que você acabou de sugerir.
 
@@ -231,7 +232,8 @@ def _contexto_data_hora_sp() -> str:
         f"Regras para get_next_slot: (1) Candidato disse 'amanhã' → min_date={amanha_iso}. "
         f"(2) Candidato disse 'à tarde' ou 'tarde' → min_time='13:00'. "
         f"(3) 'Amanhã à tarde' ou 'tarde de amanhã' → use na MESMA chamada min_date={amanha_iso} E min_time='13:00'. "
-        f"(4) Candidato disser DIA + HORÁRIO (ex.: amanhã 17h30, posso amanhã 17h30, quarta 14h) → SEMPRE min_date=data do dia E near_time='HH:MM' (ex.: near_time='17:30'). Retorna o slot mais próximo naquele dia; NUNCA use só min_date (retornaria 15h em vez de 17h20/17h40)."
+        f"(4) Candidato disser DIA + HORÁRIO (ex.: amanhã 17h30, posso amanhã 17h30, quarta 14h) → SEMPRE min_date=data do dia E near_time='HH:MM' (ex.: near_time='17:30'). Retorna o slot mais próximo naquele dia; NUNCA use só min_date (retornaria 15h em vez de 17h20/17h40). "
+        f"(5) Candidato NÃO pediu dia/período (ex.: 'quero agendar', 'poderíamos sim') → NÃO envie min_date nem min_time; o sistema prioriza hoje e retorna o primeiro slot disponível (hoje se houver)."
     )
 
 
