@@ -102,6 +102,8 @@ IMPORTANTE:
      - **Prioridade mesmo dia:** Quando o candidato NÃO pediu dia nem período específico (ex.: "quero agendar", "poderíamos sim"), chame get_next_slot **sem min_date nem min_time**. O sistema já prioriza hoje: retorna o primeiro horário disponível (hoje se houver, senão amanhã).
      - **REGRA CRÍTICA – dia + horário:** Se o candidato disser um DIA e um HORÁRIO juntos (ex.: "amanhã 17h30", "posso amanhã 17h30", "quarta 14h", "terça 10h30"), use **min_date** = data desse dia E **near_time** = horário em HH:MM (ex.: near_time="17:30"). Assim a ferramenta retorna o slot **disponível mais próximo** daquele horário naquele dia (ex.: 17h30 → 17h20 ou 17h40). NUNCA use só min_date quando o candidato indicar horário — isso retornaria o primeiro horário do dia (ex.: 15h) em vez do mais próximo do pedido.
      - Se o candidato pediu só OUTRO DIA (amanhã, quarta, sem horário): calcule a data em YYYY-MM-DD e chame get_next_slot com min_date igual a essa data.
+     - **"Mais tarde" no contexto:** Se a conversa é sobre horário de MANHÃ (ex.: você sugeriu 10h20) e o candidato diz "mais tarde", "um pouco mais tarde", "mais tarde um pouco", interprete como **mais tarde na manhã** (ex.: 11h, 11h20), NÃO como "à tarde". Chame get_next_slot com min_date = esse dia e min_time = "10:40" ou near_time = "11:00" para obter o próximo slot da manhã (11:00 ou 11:20). Só use min_time = "13:00" quando o candidato disser explicitamente "tarde", "à tarde", "de tarde", "depois do almoço".
+     - **"Depois das Xh" (manhã):** Se o candidato pedir "depois das 11h", "de manhã depois das 11h", "mais tarde de manhã", chame get_next_slot com min_date = data do dia e min_time = "11:00" (ou o horário que ele citou). Assim a ferramenta retorna 11:20 se estiver disponível. **NUNCA** diga que não tem horário depois das 11h (ou outro horário) sem antes chamar get_next_slot com min_time para esse dia.
      - Se o candidato pediu só horário à TARDE (tarde, de tarde, parte da tarde, após o almoço), sem dia específico: chame get_next_slot com min_time = "13:00". Se também pediu outro dia, use min_date e min_time juntos.
      - **Restrição do candidato:** Se o candidato disse que estuda/trabalha de manhã (ex.: "estudo no período da manhã"), NÃO sugira horário entre 9h e 13h: use min_time = "13:00". Se disse que estuda/trabalha à noite, pode sugerir manhã ou tarde normalmente.
      - Sugira **apenas UM horário por vez**.
@@ -132,13 +134,15 @@ IMPORTANTE:
    - É OBRIGATÓRIO chamar reserve_slot **ANTES** de enviar qualquer mensagem de confirmação.
    - O agendamento só é real após o retorno bem sucedido da ferramenta.
 
-4. Quando o candidato não pode no horário sugerido ou pede outro dia/tarde
+4. Quando o candidato não pode no horário sugerido ou pede outro horário/dia
    - NUNCA chame get_next_slot sem parâmetros quando o candidato pedir dia ou período. Use SEMPRE os valores do bloco [REFERÊNCIA DE DATA/HORA]:
-     - "Amanhã à tarde" ou "tarde de amanhã" → UMA chamada com min_date = (data de amanhã do bloco) E min_time = "13:00". Os dois juntos.
-     - "Amanhã" (só de manhã) → min_date = data de amanhã.
+     - **"Mais tarde"** quando o último horário sugerido era de manhã (ex.: 10h20) → "mais tarde" = mais tarde na manhã: use min_date = esse dia e min_time = "10:40" ou near_time = "11:00" (NÃO min_time = "13:00"). Só use "13:00" se o candidato disser "tarde", "à tarde", "depois do almoço".
+     - **"Depois das 11h"**, **"de manhã depois das 11h"** → min_date = data do dia e min_time = "11:00". Nunca diga que não tem horário sem ter chamado a ferramenta com esse min_time.
+     - "Amanhã à tarde" ou "tarde de amanhã" → min_date = (data de amanhã) E min_time = "13:00".
+     - "Amanhã" (sem horário) → min_date = data de amanhã.
      - "À tarde", "tarde", "parte da tarde" (sem dizer o dia) → min_time = "13:00".
-     - "Quarta à tarde" → min_date = data da próxima quarta em YYYY-MM-DD e min_time = "13:00".
-   - Se get_next_slot retornar que não há horário (ex.: para amanhã à tarde), chame de novo com preferred_responsible = "substitute" para ver se outro entrevistador tem horário à tarde; só então diga que não encontrou.
+     - "Quarta à tarde" → min_date = data da próxima quarta e min_time = "13:00".
+   - Se get_next_slot retornar que não há horário, chame de novo com preferred_responsible = "substitute"; só então diga que não encontrou.
    - Sugira o horário retornado. Se realmente não houver, informe com educação e sugira outro dia ou período.
 
 5. Quando o candidato perguntar "qual o último horário?" ou "até que horas?"
@@ -232,8 +236,10 @@ def _contexto_data_hora_sp() -> str:
         f"Regras para get_next_slot: (1) Candidato disse 'amanhã' → min_date={amanha_iso}. "
         f"(2) Candidato disse 'à tarde' ou 'tarde' → min_time='13:00'. "
         f"(3) 'Amanhã à tarde' ou 'tarde de amanhã' → use na MESMA chamada min_date={amanha_iso} E min_time='13:00'. "
-        f"(4) Candidato disser DIA + HORÁRIO (ex.: amanhã 17h30, posso amanhã 17h30, quarta 14h) → SEMPRE min_date=data do dia E near_time='HH:MM' (ex.: near_time='17:30'). Retorna o slot mais próximo naquele dia; NUNCA use só min_date (retornaria 15h em vez de 17h20/17h40). "
-        f"(5) Candidato NÃO pediu dia/período (ex.: 'quero agendar', 'poderíamos sim') → NÃO envie min_date nem min_time; o sistema prioriza hoje e retorna o primeiro slot disponível (hoje se houver)."
+        f"(4) Candidato disser DIA + HORÁRIO (ex.: amanhã 17h30) → min_date=data do dia E near_time='HH:MM'. "
+        f"(5) Candidato NÃO pediu dia/período → NÃO envie min_date nem min_time. "
+        f"(6) 'Mais tarde' ou 'um pouco mais tarde' quando o último horário sugerido era de MANHÃ (ex.: 10h20) → mais tarde NA MANHÃ: use min_date desse dia e min_time='10:40' ou near_time='11:00' (NÃO min_time='13:00'). Só use min_time='13:00' se disser 'tarde', 'à tarde', 'depois do almoço'. "
+        f"(7) 'Depois das 11h', 'de manhã depois das 11h' → min_date=data do dia e min_time='11:00'; nunca diga que não tem horário sem chamar a ferramenta com esse min_time."
     )
 
 
@@ -293,7 +299,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "get_next_slot",
-                    "description": "Obtém horário disponível. Dia+horário (ex.: 'amanhã 17h30', 'posso amanhã 17h30'): use min_date=data do dia E near_time='17:30' — retorna slot mais próximo (17h20 ou 17h40), NUNCA só min_date. 'Amanhã à tarde': min_date=amanhã e min_time='13:00'. 'Tarde' só: min_time='13:00'. 'Último horário?' use last_available_for_date. Horário específico (com ou sem dia): sempre min_date + near_time (HH:MM).",
+                    "description": "Obtém horário disponível. 'Mais tarde' quando último horário era manhã (ex.: 10h20) → min_date + min_time='10:40' ou near_time='11:00' (NÃO 13:00). 'Depois das 11h' ou 'de manhã depois das 11h' → min_date + min_time='11:00'. Dia+horário: min_date + near_time. 'Amanhã à tarde': min_date + min_time='13:00'. 'Tarde' só: min_time='13:00'. Último horário: last_available_for_date.",
                     "parameters": {
                         "type": "object",
                         "properties": {
