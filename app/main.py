@@ -491,9 +491,9 @@ async def webhook_whatsapp(
             logger.info("webhook/whatsapp: ignorando mensagem enviada para outro número (connected=%s, esperado=%s)", connected[:8] + "****", webhook_number[:8] + "****")
             return JSONResponse(content={"received": True}, status_code=200)
         if not connected:
-            logger.warning(
-                "webhook/whatsapp: whatsapp_webhook_number está configurado mas o payload não contém o número da instância (connectedPhone/instance/data.*). "
-                "Processando mesmo assim. Para filtrar por número, configure o provedor para enviar no webhook o número que recebeu a mensagem."
+            logger.info(
+                "webhook/whatsapp: whatsapp_webhook_number configurado; payload sem número da instância (connectedPhone/instance). "
+                "Processando todas as mensagens. Para filtrar por número, o provedor deve enviar no webhook o número que recebeu a mensagem."
             )
 
     # Respeitar dias e horários ativos (Painel de Controle)
