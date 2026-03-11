@@ -11,7 +11,7 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
 from .config import OPENAI_API_KEY
-from .db import get_agent_config, get_memory, add_memory, upsert_conversation
+from .db import get_agent_config, get_memory, add_memory, upsert_conversation, get_conversation
 from .php_client import get_next_slot, reserve_slot, get_entrevistador
 
 logger = logging.getLogger(__name__)
@@ -61,13 +61,13 @@ Você fala sempre com **candidatos(as)**.
   - No campo `candidate_name` ao chamar reserve_slot.
 - Se o candidato responder algo muito curto ou claramente incompleto (ex.: só "João", "Ana"), peça educadamente para informar nome e sobrenome.
 
-# Requisito de idade (estágio)
+# Idade e elegibilidade (estágio)
 
-- A maior parte das vagas da Treinee é de **estágio**, e para estagiar é necessário ter **pelo menos 16 anos**.
-- **NÃO pergunte a idade** de forma proativa em toda conversa; muitas pessoas são maiores e não precisam ser questionadas.
-- **Se o candidato informar que tem menos de 16 anos** (ou disser a idade e for menor que 16): **não prossiga com o agendamento**. Não chame get_next_slot nem reserve_slot. Responda com educação explicando que as vagas são em sua maioria de estágio e que é preciso ter no mínimo 16 anos; agradeça o interesse e encerre o atendimento de forma gentil.
-- Exemplos de frases que indicam menor de 16: "tenho 15 anos", "faço 16 só mês que vem", "ainda não tenho 16", "sou menor", "tenho 14".
-- Exemplo de resposta: "Entendo! Nossas vagas são em grande parte de estágio e precisamos que o candidato tenha pelo menos 16 anos. Quando fizer 16 anos, pode nos procurar de novo que a gente te ajuda a agendar. Obrigada pelo interesse!"
+- As vagas são em grande parte de **estágio**; é necessário ter **pelo menos 16 anos** (16, 17, 18, etc. são elegíveis). Use o bloco [DADOS DO CANDIDATO] injetado pelo sistema (candidate_age, study_shift, study_hours).
+- Se candidate_age for 16 ou mais: elegível; prossiga para horários. Se menor que 16: não prossiga. Se não informado: pergunte "Qual sua idade (em anos)?". Nunca interprete 17 como inelegível. Use sempre o bloco [DADOS DO CANDIDATO] para idade/turno.
+- Se candidate_age for 16 ou mais: elegível; prossiga. Se menor que 16: não prossiga. Se não informado: pergunte idade. 17 anos é elegível. - (obsoleto) Se o candidato informar que tem menos de 16 anos (ou disser a idade e for menor que 16): **não prossiga com o agendamento**. Não chame get_next_slot nem reserve_slot. Responda com educação explicando que as vagas são em sua maioria de estágio e que é preciso ter no mínimo 16 anos; agradeça o interesse e encerre o atendimento de forma gentil.
+- Se idade não informada no bloco: pergunte "Qual sua idade (em anos)?". Nunca interprete 17 como inelegível.
+- Resposta quando menor de 16: "Entendo. Nossas vagas são de estágio e precisam de pelo menos 16 anos. Quando fizer 16, pode nos procurar de novo. Obrigada pelo interesse."
 
 # Ferramentas disponíveis
 
@@ -259,9 +259,26 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
         base_prompt = (config and config.get("system_prompt")) or _DEFAULT_SYSTEM_PROMPT
         candidate_name = first_name or "Candidato(a)"
         ctx_data = _contexto_data_hora_sp()
+        try:
+            conv = get_conversation(phone_id)
+        except Exception:
+            conv = None
+        candidate_age = conv.get("candidate_age") if conv else None
+        if candidate_age is not None and not isinstance(candidate_age, int):
+            try:
+                candidate_age = int(candidate_age)
+            except (TypeError, ValueError):
+                candidate_age = None
+        study_shift = (conv.get("study_shift") or "").strip() if conv else ""
+        study_hours = (conv.get("study_hours") or "").strip() if conv else ""
+        dados_candidato = (
+            f"candidate_age={candidate_age if candidate_age is not None else 'não informado'}, "
+            f"study_shift={study_shift or 'não informado'}, study_hours={study_hours or 'não informado'}"
+        )
         system_prompt = (
             f"{base_prompt}\n\n"
             f"No WhatsApp, o nome do contato aparece como: {candidate_name}. Use isso apenas como referência inicial; SEMPRE peça e use o nome completo (nome e sobrenome) informado pelo candidato antes de confirmar entrevista ou reservar horário.\n\n"
+            f"[DADOS DO CANDIDATO] {dados_candidato}\n\n"
             f"[REFERÊNCIA DE DATA/HORA] {ctx_data}"
         )
 

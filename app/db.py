@@ -65,11 +65,29 @@ def try_mark_message_processed(message_id: str, phone_id: str) -> bool:
 def get_conversation(phone_id: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, phone_id, first_name, flow_status, handed_at, current_slot_date, current_slot_time, current_responsible, schedule_id FROM ia_agendamento_conversation WHERE phone_id = %s",
-                (phone_id,),
-            )
-            return cur.fetchone()
+            try:
+                cur.execute(
+                    "SELECT id, phone_id, first_name, flow_status, handed_at, current_slot_date, current_slot_time, current_responsible, schedule_id, candidate_age, study_shift, study_hours FROM ia_agendamento_conversation WHERE phone_id = %s",
+                    (phone_id,),
+                )
+            except Exception:
+                cur.execute(
+                    "SELECT id, phone_id, first_name, flow_status, handed_at, current_slot_date, current_slot_time, current_responsible, schedule_id FROM ia_agendamento_conversation WHERE phone_id = %s",
+                    (phone_id,),
+                )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            row = dict(row)
+            row.setdefault("candidate_age", None)
+            row.setdefault("study_shift", None)
+            row.setdefault("study_hours", None)
+            if row.get("candidate_age") is not None:
+                try:
+                    row["candidate_age"] = int(row["candidate_age"])
+                except (TypeError, ValueError):
+                    row["candidate_age"] = None
+            return row
 
 
 def upsert_conversation(
@@ -131,6 +149,32 @@ def reset_handed_to_human(phone_id: str) -> None:
                 "UPDATE ia_agendamento_conversation SET flow_status = 'start', handed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE phone_id = %s",
                 (phone_id,),
             )
+
+
+def update_candidate_info(
+    phone_id: str,
+    candidate_age: Optional[int] = None,
+    study_shift: Optional[str] = None,
+    study_hours: Optional[str] = None,
+) -> None:
+    """Atualiza idade/turno/horário do candidato. Cria a conversa se não existir. Ignora se as colunas ainda não existirem (migração não rodada)."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO ia_agendamento_conversation (phone_id, flow_status, candidate_age, study_shift, study_hours)
+                    VALUES (%s, 'start', %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        updated_at = CURRENT_TIMESTAMP,
+                        candidate_age = COALESCE(VALUES(candidate_age), candidate_age),
+                        study_shift = COALESCE(VALUES(study_shift), study_shift),
+                        study_hours = COALESCE(VALUES(study_hours), study_hours)
+                    """,
+                    (phone_id, candidate_age, study_shift, study_hours),
+                )
+    except Exception as e:
+        logger.debug("update_candidate_info skipped (e.g. columns not yet added): %s", e)
 
 
 def get_memory(phone_id: str, limit: int = 20) -> List[Dict[str, Any]]:

@@ -23,7 +23,9 @@ from .db import (
     is_chat_human_takeover,
     get_phones_with_buffer_older_than_seconds,
     reset_handed_to_human,
+    update_candidate_info,
 )
+from .candidate_info import extract_candidate_info
 from .agent import run_agent_with_openai
 from .config import BASE_URL
 from .media_processor import (
@@ -91,6 +93,9 @@ async def _flush_buffer(phone: str) -> None:
             reply = "Olá! Para agendar sua entrevista, por favor envie uma mensagem (por exemplo: 'Quero agendar entrevista')."
         else:
             try:
+                info = extract_candidate_info(aggregated)
+                if info.get("candidate_age") is not None or info.get("study_shift") or info.get("study_hours"):
+                    update_candidate_info(phone, candidate_age=info.get("candidate_age"), study_shift=info.get("study_shift"), study_hours=info.get("study_hours"))
                 reply = run_agent_with_openai(phone, first_name, aggregated.strip())
             except Exception as e:
                 logger.exception("run_agent_with_openai failed in flush: %s", e)
@@ -549,6 +554,19 @@ async def webhook_whatsapp(
         logger.info("webhook/whatsapp: enviando resposta padrão (texto vazio)", extra={"phone_masked": phone[:6] + "****" if len(phone) > 6 else "****"})
         send_whatsapp_message(phone, reply)
         return JSONResponse(content={"received": True}, status_code=200)
+
+    # Extrair idade/turno/horário de estudo da mensagem e persistir na conversa
+    try:
+        info = extract_candidate_info(text)
+        if info.get("candidate_age") is not None or info.get("study_shift") or info.get("study_hours"):
+            update_candidate_info(
+                phone,
+                candidate_age=info.get("candidate_age"),
+                study_shift=info.get("study_shift"),
+                study_hours=info.get("study_hours"),
+            )
+    except Exception as e:
+        logger.warning("webhook/whatsapp: falha ao extrair/atualizar candidate_info: %s", e)
 
     try:
         reply = run_agent_with_openai(phone, first_name, text)
