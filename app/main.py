@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dt_time
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -143,6 +143,48 @@ def _normalize_phone(phone: str) -> str:
     if len(s) > 13 and s.startswith("55"):
         s = s[:13]
     return s
+
+
+def _is_within_active_schedule(config: Optional[Dict[str, Any]]) -> bool:
+    """
+    Verifica se o momento atual está dentro dos dias e horários ativos configurados.
+    Se não houver restrição (active_days e horários vazios), retorna True.
+    active_days: 1=Segunda a 7=Domingo (PHP date('N')), separados por vírgula.
+    """
+    if not config:
+        return True
+    active_days_raw = (config.get("active_days") or "").strip()
+    start_raw = (config.get("active_time_start") or "").strip()
+    end_raw = (config.get("active_time_end") or "").strip()
+    if not active_days_raw and not start_raw and not end_raw:
+        return True
+    now = datetime.now()
+    # Dia da semana: isoweekday() 1=Segunda .. 7=Domingo (igual ao PHP date('N'))
+    if active_days_raw:
+        allowed = [int(x) for x in active_days_raw.split(",") if x.strip().isdigit()]
+        if allowed and now.isoweekday() not in allowed:
+            return False
+    if start_raw or end_raw:
+        try:
+            start_t = dt_time(0, 0)
+            end_t = dt_time(23, 59, 59)
+            if start_raw:
+                parts = start_raw.split(":")
+                start_t = dt_time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+            if end_raw:
+                parts = end_raw.split(":")
+                end_t = dt_time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+            now_t = now.time()
+            if start_t <= end_t:
+                if not (start_t <= now_t <= end_t):
+                    return False
+            else:
+                # intervalo atravessa meia-noite (ex.: 22:00 a 06:00)
+                if not (now_t >= start_t or now_t <= end_t):
+                    return False
+        except (ValueError, IndexError):
+            pass
+    return True
 
 
 def _extract_connected_phone(body: dict) -> str:
@@ -432,14 +474,17 @@ async def webhook_whatsapp(
         logger.info("webhook/whatsapp: ignorando mensagem fromMe=true (enviada pelo negócio)")
         return JSONResponse(content={"received": True}, status_code=200)
 
-    # Só processar quando a mensagem foi enviada PARA o número configurado (evita responder em número pessoal)
-    webhook_number = ""
+    # Obter config (agente desativado = sem config)
     try:
         config = get_agent_config()
-        webhook_number = (config and config.get("whatsapp_webhook_number")) or ""
-        webhook_number = _normalize_phone(str(webhook_number).strip()) if webhook_number else ""
     except Exception:
-        pass
+        config = None
+    if not config:
+        logger.info("webhook/whatsapp: agente desativado ou sem config, ignorando")
+        return JSONResponse(content={"received": True}, status_code=200)
+
+    # Só processar quando a mensagem foi enviada PARA o número configurado (evita responder em número pessoal)
+    webhook_number = _normalize_phone(str((config.get("whatsapp_webhook_number") or "")).strip())
     if webhook_number:
         connected = _extract_connected_phone(body)
         if connected and connected != webhook_number:
@@ -450,6 +495,11 @@ async def webhook_whatsapp(
                 "webhook/whatsapp: whatsapp_webhook_number está configurado mas o payload não contém o número da instância (connectedPhone/instance/data.*). "
                 "Processando mesmo assim. Para filtrar por número, configure o provedor para enviar no webhook o número que recebeu a mensagem."
             )
+
+    # Respeitar dias e horários ativos (Painel de Controle)
+    if not _is_within_active_schedule(config):
+        logger.info("webhook/whatsapp: fora do horário/dias ativos configurados, ignorando")
+        return JSONResponse(content={"received": True}, status_code=200)
 
     _text_preview = ""
     if isinstance(body, dict):

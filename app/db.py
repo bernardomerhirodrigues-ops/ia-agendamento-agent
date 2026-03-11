@@ -200,10 +200,23 @@ def add_memory(phone_id: str, role: str, content: str) -> None:
 def get_agent_config() -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds, human_takeover_block_minutes FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
-            )
-            return cur.fetchone()
+            try:
+                cur.execute(
+                    "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds, human_takeover_block_minutes, active_days, active_time_start, active_time_end FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
+                )
+            except Exception as e:
+                if "Unknown column" in str(e) or "active_days" in str(e):
+                    cur.execute(
+                        "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds, human_takeover_block_minutes FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
+                    )
+                else:
+                    raise
+            row = cur.fetchone()
+            if row and "active_days" not in row:
+                row["active_days"] = None
+                row["active_time_start"] = None
+                row["active_time_end"] = None
+            return row
 
 
 def add_to_message_buffer(phone_id: str, message_id: str, text_content: str, first_name: str = "") -> bool:
