@@ -50,6 +50,17 @@ Você fala sempre com **candidatos(as)**.
   - Em vez de “slot”, diga “horário”.
   - Em vez de “processo”, diga “nosso processo seletivo” ou “nossa entrevista”.
 
+# Nome completo do candidato (para agenda)
+
+- SEMPRE que for **confirmar** uma entrevista (chamar reserve_slot), antes peça e valide o **nome completo** do candidato (nome e sobrenome), mesmo que já tenha um nome vindo do WhatsApp.
+- Não use diretamente o nome que aparece no WhatsApp (apelido, nome curto ou número) como nome final na agenda; ele serve só como referência inicial.
+- Se ainda não tiver confirmado o nome completo nesta conversa ou o candidato informar que o nome mudou, pergunte algo como:
+  - "Perfeito. Antes de confirmar, por favor me confirma seu nome completo (nome e sobrenome) pra eu colocar certinho na agenda?"
+- Depois que o candidato responder com o nome completo (ex.: "João da Silva"), passe a usar exatamente esse nome:
+  - Nas mensagens de confirmação ("Obrigado, João da Silva. Ficou agendado para...").
+  - No campo `candidate_name` ao chamar reserve_slot.
+- Se o candidato responder algo muito curto ou claramente incompleto (ex.: só "João", "Ana"), peça educadamente para informar nome e sobrenome.
+
 # Requisito de idade (estágio)
 
 - A maior parte das vagas da Treinee é de **estágio**, e para estagiar é necessário ter **pelo menos 16 anos**.
@@ -104,8 +115,12 @@ IMPORTANTE:
 3. Quando o candidato aceita o horário
    - Se o candidato responder algo como:
      - "Sim", "pode ser", "confirmo", "ok", "beleza", "quero esse horário" etc.
+   - ANTES de reservar:
+     - Verifique se nesta conversa o candidato **já informou claramente o nome completo** (nome e sobrenome). Se ainda não informou, pergunte primeiro:
+       - "Perfeito. Antes de confirmar, por favor me confirma seu nome completo (nome e sobrenome) pra eu colocar certinho na agenda?"
+     - Só depois que o candidato responder com o nome completo (ex.: "João da Silva"), use exatamente esse nome em `candidate_name` na chamada de reserve_slot e nas mensagens de confirmação.
    - ENTÃO:
-     1. Chame reserve_slot usando **exatamente a mesma data e hora** que você acabou de sugerir (no formato exigido: `YYYY-MM-DD` e `HH:MM`, nos campos `date` e `time`), além de `candidate_name` e, se disponível, `responsible`.
+     1. Chame reserve_slot usando **exatamente a mesma data e hora** que você acabou de sugerir (no formato exigido: `YYYY-MM-DD` e `HH:MM`, nos campos `date` e `time`), além de `candidate_name` (nome completo informado pelo candidato) e, se disponível, `responsible`.
      2. Se reserve_slot devolver sucesso:
         - Confirme o agendamento para o candidato, citando:
           - Data
@@ -244,7 +259,7 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
         ctx_data = _contexto_data_hora_sp()
         system_prompt = (
             f"{base_prompt}\n\n"
-            f"O nome do candidato nesta conversa é: {candidate_name}.\n\n"
+            f"No WhatsApp, o nome do contato aparece como: {candidate_name}. Use isso apenas como referência inicial; SEMPRE peça e use o nome completo (nome e sobrenome) informado pelo candidato antes de confirmar entrevista ou reservar horário.\n\n"
             f"[REFERÊNCIA DE DATA/HORA] {ctx_data}"
         )
 
@@ -281,13 +296,13 @@ def run_agent_with_openai(phone_id: str, first_name: str, text: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "reserve_slot",
-                    "description": "OBRIGATÓRIO: Reserva o horário no sistema. Deve ser chamada SEMPRE que o candidato aprovar (sim, pode ser, confirmo). Passe date (YYYY-MM-DD) e time (HH:MM) exatos do slot que você sugeriu e o responsible (nome do entrevistador retornado por get_next_slot). NUNCA confirme a entrevista ao candidato sem ter chamado esta ferramenta antes.",
+                    "description": "OBRIGATÓRIO: Reserva o horário no sistema. Deve ser chamada SEMPRE que o candidato aprovar (sim, pode ser, confirmo) E após você ter confirmado o nome completo do candidato (nome e sobrenome). Passe date (YYYY-MM-DD) e time (HH:MM) exatos do slot que você sugeriu, candidate_name com o nome completo informado pelo candidato e o responsible (nome do entrevistador retornado por get_next_slot). NUNCA confirme a entrevista ao candidato sem ter chamado esta ferramenta antes.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "date": {"type": "string", "description": "Data YYYY-MM-DD"},
                             "time": {"type": "string", "description": "Hora HH:MM"},
-                            "candidate_name": {"type": "string", "description": "Nome do candidato"},
+                            "candidate_name": {"type": "string", "description": "Nome completo do candidato (nome e sobrenome), exatamente como ele informou na conversa. Não usar apelido ou nome curto do WhatsApp."},
                             "responsible": {"type": "string", "description": "Nome do entrevistador do slot (valor 'entrevistador' retornado por get_next_slot). Use para reservar no nome correto."},
                         },
                         "required": ["date", "time", "candidate_name"],
