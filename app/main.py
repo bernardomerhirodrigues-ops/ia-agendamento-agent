@@ -338,14 +338,14 @@ def _extract_whatsapp_payload(body: dict) -> Optional[dict]:
             return val.get("body") or val.get("text") or val.get("message") or ""
         return str(val)
 
-    # Payload Treinee (formato key + message): sender_pn tem o número real, message.conversation o texto
+    # Payload Treinee: key + message; fromMe=false = mensagem do contato. Número em key.sender_pn (antes do @), texto em message.conversation, nome em pushName.
     if "key" in body and "message" in body:
         key = body.get("key", {}) or {}
         msg = body.get("message", {}) or {}
         raw_phone = key.get("sender_pn") or key.get("remoteJid") or ""
-        raw_phone = str(raw_phone).split("@")[0] if raw_phone else ""
-        # Texto comum
-        text = msg.get("conversation") or msg.get("extendedTextMessage", {}).get("text") or ""
+        raw_phone = str(raw_phone).split("@")[0].strip() if raw_phone else ""
+        # Texto: message.conversation (texto simples) ou message.extendedTextMessage.text
+        text = msg.get("conversation") or (msg.get("extendedTextMessage") or {}).get("text") or ""
         # Mídia (áudio, imagem, documento) – converte para marcadores e extrai URL/ID
         media_url, media_id, media_mime, media_filename = None, None, None, None
         if not text and isinstance(msg, dict):
@@ -490,13 +490,11 @@ async def webhook_whatsapp(
     except Exception as e:
         logger.warning("webhook/whatsapp: falha ao serializar body para log: %s", e)
 
-    # Provedor pode usar fromMe em sentidos opostos: (A) fromMe=true = enviada pelo negócio → ignorar;
-    # (B) fromMe=true = recebida do contato → processar. Aqui tratamos (B): ignorar só quando fromMe=false (enviada pelo negócio).
+    # Treinee/padrão: fromMe=false = mensagem do contato (processar); fromMe=true = enviada pelo negócio (ignorar).
     from_me = body.get("fromMe") if isinstance(body, dict) else None
     if from_me is None and isinstance(body.get("key"), dict):
         from_me = body["key"].get("fromMe")
-    # fromMe=false = mensagem enviada PELO negócio (outgoing) → ignorar e eventualmente marcar human takeover
-    if from_me is False:
+    if from_me is True:
         chat_id = body.get("phone") or (body.get("key") or {}).get("remoteJid") or ""
         if chat_id:
             chat_id = str(chat_id).strip()
@@ -508,10 +506,9 @@ async def webhook_whatsapp(
             )
             if has_prior_chat:
                 mark_human_takeover_chat(chat_id)
-                logger.info("webhook/whatsapp: fromMe=false e conversa já existia, chat marcado como humano takeover")
-        logger.info("webhook/whatsapp: ignorando mensagem fromMe=false (enviada pelo negócio)")
+                logger.info("webhook/whatsapp: fromMe=true e conversa já existia, chat marcado como humano takeover")
+        logger.info("webhook/whatsapp: ignorando mensagem fromMe=true (enviada pelo negócio)")
         return JSONResponse(content={"received": True}, status_code=200)
-    # fromMe=true ou None: tratar como mensagem do contato (processar e responder)
 
     # Obter config (agente desativado = sem config)
     try:
