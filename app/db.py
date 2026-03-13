@@ -202,7 +202,7 @@ def get_agent_config() -> Optional[Dict[str, Any]]:
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds, human_takeover_block_minutes, active_days, active_time_start, active_time_end FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
+                    "SELECT openai_api_key, openai_model, system_prompt, temperature, default_entrevistador, whatsapp_webhook_number, message_buffer_seconds, human_takeover_block_minutes, active_days, active_time_start, active_time_end, active_time_start_saturday, active_time_end_saturday FROM ia_agendamento_config WHERE enabled = 1 LIMIT 1"
                 )
             except Exception as e:
                 if "Unknown column" in str(e) or "active_days" in str(e):
@@ -216,6 +216,9 @@ def get_agent_config() -> Optional[Dict[str, Any]]:
                 row["active_days"] = None
                 row["active_time_start"] = None
                 row["active_time_end"] = None
+            if row and "active_time_start_saturday" not in row:
+                row["active_time_start_saturday"] = None
+                row["active_time_end_saturday"] = None
             return row
 
 

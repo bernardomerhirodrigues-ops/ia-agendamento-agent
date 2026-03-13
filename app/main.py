@@ -159,13 +159,16 @@ def _is_within_active_schedule(config: Optional[Dict[str, Any]]) -> bool:
     Verifica se o momento atual está dentro dos dias e horários ativos configurados.
     Usa horário de Brasília (America/Sao_Paulo); o servidor Render roda em UTC.
     active_days: 1=Segunda a 7=Domingo (PHP date('N')), separados por vírgula.
+    Sábado (isoweekday 6) pode ter horário próprio (active_time_start_saturday / active_time_end_saturday).
     """
     if not config:
         return True
     active_days_raw = (config.get("active_days") or "").strip()
     start_raw = (config.get("active_time_start") or "").strip()
     end_raw = (config.get("active_time_end") or "").strip()
-    if not active_days_raw and not start_raw and not end_raw:
+    start_sat_raw = (config.get("active_time_start_saturday") or "").strip()
+    end_sat_raw = (config.get("active_time_end_saturday") or "").strip()
+    if not active_days_raw and not start_raw and not end_raw and not start_sat_raw and not end_sat_raw:
         return True
     now = datetime.now(_ACTIVE_SCHEDULE_TZ)
     # Dia da semana: isoweekday() 1=Segunda .. 7=Domingo (igual ao PHP date('N'))
@@ -173,6 +176,9 @@ def _is_within_active_schedule(config: Optional[Dict[str, Any]]) -> bool:
         allowed = [int(x) for x in active_days_raw.split(",") if x.strip().isdigit()]
         if allowed and now.isoweekday() not in allowed:
             return False
+    # Sábado (6): usa horário do sábado se ambos preenchidos; senão usa o padrão
+    if now.isoweekday() == 6 and start_sat_raw and end_sat_raw:
+        start_raw, end_raw = start_sat_raw, end_sat_raw
     if start_raw or end_raw:
         try:
             start_t = dt_time(0, 0)
